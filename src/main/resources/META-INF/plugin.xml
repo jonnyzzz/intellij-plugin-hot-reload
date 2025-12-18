@@ -1,0 +1,23 @@
+<idea-plugin>
+    <id>com.jonnyzzz.intellij.hot-reload</id>
+    <name>Plugin Hot Reload</name>
+    <vendor>jonnyzzz.com</vendor>
+
+    <description><![CDATA[
+    Provides an HTTP REST endpoint for plugin hot reload functionality.
+    Creates a marker file under user home directory for process discovery.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- HTTP REST API endpoint -->
+        <httpRequestHandler
+            implementation="com.jonnyzzz.intellij.hotreload.HotReloadHttpHandler"/>
+
+        <!-- Startup activity to create marker file -->
+        <postStartupActivity
+            implementation="com.jonnyzzz.intellij.hotreload.HotReloadStartupActivity"/>
+    </extensions>
+
+</idea-plugin>
