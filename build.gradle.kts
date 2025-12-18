@@ -27,6 +27,7 @@ dependencies {
 kotlin { jvmToolchain(21) }
 
 intellijPlatform {
+    buildSearchableOptions = false
     pluginConfiguration {
         name = "Plugin Hot Reload"
         version = project.version.toString()
