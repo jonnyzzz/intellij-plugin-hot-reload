@@ -37,9 +37,13 @@ class HotReloadMarkerService : Disposable {
     val authToken: String = UUID.randomUUID().toString()
 
     fun createFiles() {
+        val userHome = Path.of(System.getProperty("user.home"))
+
+        // Clean up stale marker files from dead processes
+        cleanupStaleMarkerFiles(userHome)
+
         val pid = ProcessHandle.current().pid()
-        val userHome = System.getProperty("user.home")
-        val markerFile = Path.of(userHome, ".$pid.hot-reload")
+        val markerFile = userHome.resolve(".$pid.hot-reload")
 
         // Get the built-in server port
         val port = BuiltInServerManager.getInstance().port
@@ -107,6 +111,34 @@ class HotReloadMarkerService : Disposable {
         val runtime = Runtime.getRuntime()
         val maxMemoryMb = runtime.maxMemory() / (1024 * 1024)
         appendLine("Memory: $maxMemoryMb MB")
+    }
+
+    /**
+     * Remove marker files for processes that are no longer running.
+     */
+    private fun cleanupStaleMarkerFiles(userHome: Path) {
+        val markerPattern = Regex("\\.(\\d+)\\.hot-reload")
+
+        runCatching {
+            Files.list(userHome).use { stream ->
+                stream.filter { file ->
+                    val match = markerPattern.find(file.fileName.toString())
+                    if (match != null) {
+                        val pid = match.groupValues[1].toLongOrNull()
+                        pid != null && !ProcessHandle.of(pid).isPresent
+                    } else {
+                        false
+                    }
+                }.forEach { staleFile ->
+                    runCatching {
+                        Files.deleteIfExists(staleFile)
+                        log.info("Removed stale marker file: $staleFile")
+                    }
+                }
+            }
+        }.onFailure { e ->
+            log.warn("Failed to cleanup stale marker files", e)
+        }
     }
 
     override fun dispose() = Unit
