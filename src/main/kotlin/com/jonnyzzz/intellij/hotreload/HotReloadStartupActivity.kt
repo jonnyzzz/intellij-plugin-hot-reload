@@ -42,9 +42,11 @@ class HotReloadStartupActivity : ProjectActivity {
             markerFileCreated = true
             LOG.info("Created hot-reload marker file: $markerFile")
 
-            // Register cleanup on application disposal
+            // Register cleanup on application disposal using a named disposable
             val application = ApplicationManager.getApplication()
-            Disposer.register(application, Disposable {
+            val cleanupDisposable = Disposer.newDisposable("hot-reload-marker-cleanup")
+            Disposer.register(application, cleanupDisposable)
+            Disposer.register(cleanupDisposable, Disposable {
                 deleteMarkerFile()
             })
         } catch (e: Exception) {
