@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code when working with this repository.
 
+## MUST DO
+Use IntelliJ for everything where you can, it makes you 100x professional!
+
+You must never ignore warnings or errors, instead, figure out
+how to fix that the right way.
+
+We love tests, and tests must show the reality. A failing test is much must
+better than a test that does not check the problems. Make sure you fix tests.
+
+Check you changes to see if there are no new warnings added to the code.
+
+
 ## Project Overview
 
 IntelliJ Plugin Hot Reload - a plugin that provides an HTTP REST endpoint for dynamically reloading plugins without IDE restart.
