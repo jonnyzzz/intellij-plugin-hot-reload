@@ -11,6 +11,10 @@
     <depends>com.intellij.modules.platform</depends>
 
     <extensions defaultExtensionNs="com.intellij">
+        <!-- Application-level service for plugin hot reload -->
+        <applicationService
+            serviceImplementation="com.jonnyzzz.intellij.hotreload.PluginHotReloadService"/>
+
         <!-- HTTP REST API endpoint -->
         <httpRequestHandler
             implementation="com.jonnyzzz.intellij.hotreload.HotReloadHttpHandler"/>
