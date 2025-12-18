@@ -85,7 +85,16 @@ class PluginHotReloadService {
         progress.report(HotReloadBundle.message("progress.plugin.id", pluginId))
         log.info("Extracted plugin ID: $pluginId")
 
-        // Step 2: Save zip to temp file
+        // Step 2: Check for self-reload attempt
+        val selfPluginId = getSelfPluginId()
+        if (pluginId == selfPluginId) {
+            val errorMsg = HotReloadBundle.message("error.self.reload")
+            log.warn("Attempted to reload the hot-reload plugin itself (ID: $selfPluginId)")
+            progress.reportError(errorMsg)
+            return ReloadResult(false, errorMsg, pluginId)
+        }
+
+        // Step 3: Save zip to temp file
         val tempZipFile = try {
             val tempFile = Files.createTempFile("plugin-hot-reload-", ".zip")
             Files.write(tempFile, zipBytes)
@@ -118,7 +127,7 @@ class PluginHotReloadService {
     ): ReloadResult {
         val pluginId = PluginId.getId(pluginIdString)
 
-        // Step 3: Find existing plugin
+        // Step 4: Find existing plugin
         progress.report(HotReloadBundle.message("progress.looking.for.existing"))
         val existingPlugin = PluginManagerCore.getPlugin(pluginId)
         val existingPluginPath = existingPlugin?.pluginPath
@@ -127,11 +136,11 @@ class PluginHotReloadService {
             progress.report(HotReloadBundle.message("progress.existing.plugin", existingPlugin.name, existingPluginPath.toString()))
         }
 
-        // Step 4: Check if dynamic reload is possible and get reason if not
+        // Step 5: Check if dynamic reload is possible and get reason if not
         var unloadBlockedReason: String? = null
         if (existingPlugin != null) {
             val descriptor = existingPlugin as? IdeaPluginDescriptorImpl
-            if (descriptor != null) {
+            if (descriptor !== null) {
                 @Suppress("UnstableApiUsage")
                 unloadBlockedReason = DynamicPlugins.checkCanUnloadWithoutRestart(descriptor)
                 if (unloadBlockedReason != null) {
@@ -142,11 +151,11 @@ class PluginHotReloadService {
             }
         }
 
-        // Step 5: Unload existing plugin if it exists and is enabled
+        // Step 6: Unload existing plugin if it exists and is enabled
         var memoryDumpPath: String? = null
         if (existingPlugin != null && !PluginManagerCore.isDisabled(pluginId)) {
             val descriptor = existingPlugin as? IdeaPluginDescriptorImpl
-            if (descriptor != null) {
+            if (descriptor !== null) {
                 progress.report(HotReloadBundle.message("progress.unloading", existingPlugin.name))
 
                 @Suppress("UnstableApiUsage")
@@ -170,7 +179,7 @@ class PluginHotReloadService {
             }
         }
 
-        // Step 6: Delete old plugin folder (rename first for safety)
+        // Step 7: Delete old plugin folder (rename first for safety)
         if (existingPluginPath != null && Files.exists(existingPluginPath)) {
             progress.report(HotReloadBundle.message("progress.removing.old", existingPluginPath))
             try {
@@ -190,7 +199,7 @@ class PluginHotReloadService {
             }
         }
 
-        // Step 7: Load descriptor from the zip file
+        // Step 8: Load descriptor from the zip file
         progress.report(HotReloadBundle.message("progress.loading.descriptor"))
         @Suppress("UnstableApiUsage")
         val newDescriptor = try {
@@ -202,7 +211,7 @@ class PluginHotReloadService {
             return ReloadResult(false, errorMsg, pluginIdString, memoryDumpPath = memoryDumpPath, unloadBlockedReason = unloadBlockedReason)
         }
 
-        if (newDescriptor == null) {
+        if (newDescriptor === null) {
             val errorMsg = HotReloadBundle.message("error.descriptor.load.failed")
             progress.reportError(errorMsg)
             return ReloadResult(false, errorMsg, pluginIdString, memoryDumpPath = memoryDumpPath, unloadBlockedReason = unloadBlockedReason)
@@ -213,7 +222,7 @@ class PluginHotReloadService {
 
         progress.report(HotReloadBundle.message("progress.installing", pluginName, pluginVersion ?: "unknown"))
 
-        // Step 8: Install and load the plugin dynamically
+        // Step 9: Install and load the plugin dynamically
         @Suppress("UnstableApiUsage")
         val loaded = try {
             PluginInstaller.installAndLoadDynamicPlugin(zipFile, null, newDescriptor as IdeaPluginDescriptorImpl)
@@ -260,17 +269,45 @@ class PluginHotReloadService {
 
     /**
      * Extract the plugin ID from plugin.xml inside the zip file.
+     * Handles both flat structure (META-INF/plugin.xml) and nested jar structure
+     * (plugin-name/lib/plugin-name.jar containing META-INF/plugin.xml).
      */
     internal fun extractPluginId(zipBytes: ByteArray): String? {
         ZipInputStream(ByteArrayInputStream(zipBytes)).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
                 val name = entry.name
+                // Check for direct plugin.xml (flat structure)
                 if (name.endsWith("/META-INF/plugin.xml") || name == "META-INF/plugin.xml") {
                     val xmlBytes = zis.readBytes()
                     return parsePluginIdFromXml(xmlBytes)
                 }
+                // Check for jars in lib folder (nested structure)
+                if (name.contains("/lib/") && name.endsWith(".jar") && !entry.isDirectory) {
+                    val jarBytes = zis.readBytes()
+                    val pluginId = extractPluginIdFromJar(jarBytes)
+                    if (pluginId != null) {
+                        return pluginId
+                    }
+                }
                 entry = zis.nextEntry
+            }
+        }
+        return null
+    }
+
+    /**
+     * Extract plugin ID from a jar file that may contain META-INF/plugin.xml.
+     */
+    private fun extractPluginIdFromJar(jarBytes: ByteArray): String? {
+        ZipInputStream(ByteArrayInputStream(jarBytes)).use { jis ->
+            var entry = jis.nextEntry
+            while (entry != null) {
+                if (entry.name == "META-INF/plugin.xml") {
+                    val xmlBytes = jis.readBytes()
+                    return parsePluginIdFromXml(xmlBytes)
+                }
+                entry = jis.nextEntry
             }
         }
         return null
@@ -297,4 +334,18 @@ class PluginHotReloadService {
             null
         }
     }
+}
+
+
+/**
+ * Gets the plugin ID of this hot-reload plugin dynamically.
+ * We cannot reload ourselves - the reload code would be unloaded mid-execution.
+ *
+ * Falls back to EXPECTED_PLUGIN_ID if dynamic lookup fails (e.g., during tests
+ * or if the plugin classloader isn't properly set up).
+ */
+fun getSelfPluginId(): String {
+    return PluginManager.getPluginByClass(PluginHotReloadService::class.java)
+        ?.pluginId?.idString
+        ?: "com.jonnyzzz.intellij.hot-reload"
 }
