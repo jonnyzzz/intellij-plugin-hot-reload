@@ -39,104 +39,67 @@ If you're developing an IntelliJ plugin using the IntelliJ Platform Gradle Plugi
 import java.net.HttpURLConnection
 import java.net.URI
 
-// Data class for hot-reload endpoints
-data class HotReloadEndpoint(
-    val url: String,
-    val token: String,
-    val dateTime: String,
-    val ideInfo: String,
-    val markerFile: File
-)
+data class HotReloadEndpoint(val url: String, val token: String, val ideInfo: String)
 
-// Function to find hot-reload endpoints
 fun findHotReloadEndpoints(): List<HotReloadEndpoint> {
-    val userHome = File(System.getProperty("user.home"))
-    val markerFiles = userHome.listFiles { file ->
-        file.name.matches(Regex("\\.\\d+\\.hot-reload"))
-    } ?: emptyArray()
-
-    return markerFiles.mapNotNull { file ->
-        try {
-            val lines = file.readLines()
-            if (lines.size >= 3) {
-                HotReloadEndpoint(
-                    url = lines[0].trim(),
-                    token = lines[1].trim(),
-                    dateTime = lines[2].trim(),
-                    ideInfo = lines.drop(4).joinToString("\n").trim(),
-                    markerFile = file
-                )
-            } else null
-        } catch (e: Exception) { null }
-    }.distinctBy { it.url }
+    val home = File(System.getProperty("user.home"))
+    return home.listFiles { f -> f.name.matches(Regex("\\.\\d+\\.hot-reload")) }
+        ?.mapNotNull { f ->
+            val lines = f.readLines()
+            if (lines.size >= 3) HotReloadEndpoint(lines[0], lines[1], lines.drop(4).firstOrNull() ?: "") else null
+        }
+        ?.distinctBy { it.url }
+        ?: emptyList()
 }
 
-// Function to deploy with streaming output
-fun deployToEndpoint(endpoint: HotReloadEndpoint, pluginZip: File): Boolean {
-    return try {
-        val url = URI(endpoint.url).toURL()
-        val connection = url.openConnection() as HttpURLConnection
-        connection.requestMethod = "POST"
-        connection.doOutput = true
-        connection.setRequestProperty("Authorization", endpoint.token)
-        connection.setRequestProperty("Content-Type", "application/octet-stream")
-        connection.connectTimeout = 5000
-        connection.readTimeout = 300000
-
-        connection.outputStream.use { output ->
-            pluginZip.inputStream().use { input ->
-                input.copyTo(output)
-            }
-        }
-
-        if (connection.responseCode !in 200..299) {
-            println("Failed: ${connection.responseCode}")
-            return false
-        }
-
-        // Stream progress output
-        var success = false
-        connection.inputStream.bufferedReader().useLines { lines ->
-            for (line in lines) {
-                when {
-                    line.startsWith("INFO: ") -> println("  ${line.removePrefix("INFO: ")}")
-                    line.startsWith("ERROR: ") -> println("  ✗ ${line.removePrefix("ERROR: ")}")
-                    line.startsWith("RESULT: SUCCESS") -> success = true
-                    line.startsWith("RESULT: FAILED") -> success = false
-                }
-            }
-        }
-        success
-    } catch (e: Exception) {
-        println("Error: ${e.message}")
-        false
+fun deployToEndpoint(endpoint: HotReloadEndpoint, zip: File): Boolean {
+    val conn = (URI(endpoint.url).toURL().openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"
+        doOutput = true
+        setRequestProperty("Authorization", endpoint.token)
+        setRequestProperty("Content-Type", "application/octet-stream")
+        connectTimeout = 5000
+        readTimeout = 300000
     }
+
+    conn.outputStream.use { out -> zip.inputStream().use { it.copyTo(out) } }
+
+    if (conn.responseCode !in 200..299) {
+        println("  ✗ HTTP ${conn.responseCode}")
+        return false
+    }
+
+    var lastLine = ""
+    conn.inputStream.bufferedReader().forEachLine { line ->
+        println("  $line")
+        lastLine = line
+    }
+
+    return lastLine == "SUCCESS"
 }
 
-// Deploy plugin task
 val deployPlugin by tasks.registering {
     group = "intellij platform"
-    description = "Deploy plugin to all running IDE instances with hot-reload support"
+    description = "Deploy plugin to running IDEs with hot-reload"
     dependsOn(tasks.named("buildPlugin"))
 
     doLast {
-        val pluginZip = tasks.named("buildPlugin").get().outputs.files.singleFile
+        val zip = tasks.named("buildPlugin").get().outputs.files.singleFile
         val endpoints = findHotReloadEndpoints()
 
         if (endpoints.isEmpty()) {
-            println("No hot-reload endpoints found. Start an IDE with the Plugin Hot Reload plugin installed.")
+            println("No hot-reload endpoints found in ~")
             return@doLast
         }
 
-        println("Deploying to ${endpoints.size} endpoint(s)...")
-        endpoints.forEach { endpoint ->
-            println("\nDeploying to: ${endpoint.url}")
-            if (deployToEndpoint(endpoint, pluginZip)) {
-                println("✓ Deployed successfully")
-            } else {
-                println("✗ Deployment failed")
-            }
+        var ok = 0
+        var fail = 0
+        endpoints.forEach { ep ->
+            println("\n${ep.ideInfo.ifEmpty { ep.url }}")
+            if (deployToEndpoint(ep, zip)) ok++ else fail++
         }
+        println("\nDone: $ok ok, $fail failed")
+        if (fail > 0 && ok == 0) throw GradleException("All deployments failed")
     }
 }
 ```
@@ -192,36 +155,24 @@ curl -X POST -H "Authorization: $TOKEN" --data-binary @my-plugin.zip http://loca
 
 Example streaming output:
 ```
-INFO: Starting plugin hot reload, zip size: 123456 bytes
-INFO: Extracting plugin ID from zip...
-INFO: Plugin ID: com.example.my-plugin
-INFO: Looking for existing plugin...
-INFO: Existing plugin: My Plugin, path: /path/to/plugins/my-plugin
-INFO: Unloading existing plugin: My Plugin
-INFO: Plugin unloaded successfully
-INFO: Removing old plugin at: /path/to/plugins/my-plugin
-INFO: Old plugin folder removed
-INFO: Loading plugin descriptor from zip...
-INFO: Installing and loading plugin: My Plugin (1.0.0)
-INFO: Plugin My Plugin reloaded successfully
-
-RESULT: SUCCESS
-PLUGIN: My Plugin
+Starting plugin hot reload, zip size: 123456 bytes
+Extracting plugin ID from zip...
+Plugin ID: com.example.my-plugin
+Looking for existing plugin...
+Existing plugin: My Plugin, path: /path/to/plugins/my-plugin
+Unloading existing plugin: My Plugin
+Plugin unloaded successfully
+Installing and loading plugin: My Plugin (1.0.0)
+Plugin My Plugin reloaded successfully
+SUCCESS
 ```
 
 ### Response Format
 
-The POST endpoint returns a streaming `text/plain` response with one message per line:
+The POST endpoint returns a streaming `text/plain` response with progress messages, one per line.
+The last line is always either `SUCCESS` or `FAILED`.
 
-| Prefix | Description |
-|--------|-------------|
-| `INFO: ` | Progress message |
-| `ERROR: ` | Error message |
-| `RESULT: SUCCESS` | Reload completed successfully |
-| `RESULT: FAILED` | Reload failed |
-| `RESULT: RESTART_REQUIRED` | Plugin installed but IDE restart needed |
-| `PLUGIN: ` | Plugin name |
-| `MESSAGE: ` | Additional status message |
+Error messages are prefixed with `ERROR: `.
 
 ### Marker File Format
 

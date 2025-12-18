@@ -1,28 +1,51 @@
 package com.jonnyzzz.intellij.hotreload
 
+import com.intellij.notification.Notification
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.components.Service
+import com.intellij.openapi.components.service
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Helper for showing IDE notifications during plugin hot reload.
+ * Service for showing IDE notifications during plugin hot reload.
  */
-//TODO use @Service, not object.
-object HotReloadNotifications {
-    private const val GROUP_ID = "Plugin Hot Reload"
+@Service(Service.Level.APP)
+class HotReloadNotificationService {
+    private val activeNotifications = ConcurrentHashMap<String, Notification>()
 
-    /**
-     * Shows a progress notification that can be updated or replaced.
-     */
-    fun showProgress(pluginName: String): ProgressNotification {
-        return ProgressNotification(pluginName)
+    companion object {
+        private const val GROUP_ID = "Plugin Hot Reload"
+
+        fun getInstance(): HotReloadNotificationService = service()
     }
 
     /**
-     * Shows a success notification.
+     * Shows a progress notification for the given plugin.
+     * If a notification already exists for this plugin, it will be expired first.
      */
-    fun showSuccess(pluginName: String) {
+    fun showProgress(pluginId: String, pluginName: String) {
         ApplicationManager.getApplication().invokeLater {
+            val notification = NotificationGroupManager.getInstance()
+                .getNotificationGroup(GROUP_ID)
+                .createNotification(
+                    "Reloading Plugin",
+                    "Reloading plugin '$pluginName'...",
+                    NotificationType.INFORMATION
+                )
+            activeNotifications.put(pluginId, notification)?.expire()
+            notification.notify(null)
+        }
+    }
+
+    /**
+     * Shows a success notification and expires any active progress notification.
+     */
+    fun showSuccess(pluginId: String, pluginName: String) {
+        ApplicationManager.getApplication().invokeLater {
+            expireNotification(pluginId)
+
             NotificationGroupManager.getInstance()
                 .getNotificationGroup(GROUP_ID)
                 .createNotification(
@@ -35,13 +58,17 @@ object HotReloadNotifications {
     }
 
     /**
-     * Shows an error notification.
+     * Shows an error notification and expires any active progress notification.
      */
-    fun showError(pluginName: String?, message: String) {
+    fun showError(pluginId: String?, pluginName: String?, message: String) {
         ApplicationManager.getApplication().invokeLater {
+            if (pluginId != null) {
+                expireNotification(pluginId)
+            }
+
             val title = if (pluginName != null) "Plugin Reload Failed" else "Hot Reload Failed"
             val content = if (pluginName != null) {
-                "Plugin '$pluginName' reload failed: $message"
+                "Plugin '$pluginName' failed: $message"
             } else {
                 message
             }
@@ -53,71 +80,7 @@ object HotReloadNotifications {
         }
     }
 
-    /**
-     * A notification that shows progress and can be expired/replaced.
-     */
-    //TODO: maintain the map <pluginID -> Notificaiton> in the service,
-    //TODO: do not allow more than 1 notificatino per plugin>
-    class ProgressNotification(private val pluginName: String) {
-        private var notification: com.intellij.notification.Notification? = null
-
-        init {
-            ApplicationManager.getApplication().invokeLater {
-                notification = NotificationGroupManager.getInstance()
-                    .getNotificationGroup(GROUP_ID)
-                    .createNotification(
-                        "Reloading Plugin",
-                        "Reloading plugin '$pluginName'...",
-                        NotificationType.INFORMATION
-                    )
-                notification?.notify(null)
-            }
-        }
-
-        /**
-         * Update the notification with a new message.
-         */
-        fun update(message: String) {
-            ApplicationManager.getApplication().invokeLater {
-                notification?.expire()
-                notification = NotificationGroupManager.getInstance()
-                    .getNotificationGroup(GROUP_ID)
-                    .createNotification(
-                        "Reloading Plugin",
-                        message,
-                        NotificationType.INFORMATION
-                    )
-                notification?.notify(null)
-            }
-        }
-
-        /**
-         * Mark the reload as successful and expire the progress notification.
-         */
-        fun success() {
-            ApplicationManager.getApplication().invokeLater {
-                notification?.expire()
-                showSuccess(pluginName)
-            }
-        }
-
-        /**
-         * Mark the reload as failed and expire the progress notification.
-         */
-        fun error(message: String) {
-            ApplicationManager.getApplication().invokeLater {
-                notification?.expire()
-                showError(pluginName, message)
-            }
-        }
-
-        /**
-         * Just expire the notification without showing success/error.
-         */
-        fun expire() {
-            ApplicationManager.getApplication().invokeLater {
-                notification?.expire()
-            }
-        }
+    private fun expireNotification(pluginId: String) {
+        activeNotifications.remove(pluginId)?.expire()
     }
 }
