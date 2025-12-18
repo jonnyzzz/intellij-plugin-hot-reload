@@ -5,16 +5,20 @@ An IntelliJ IDEA plugin that provides an HTTP REST endpoint for dynamically relo
 ## Features
 
 - **HTTP REST Endpoint** (`/api/plugin-hot-reload`):
-  - `GET`: Returns usage instructions and current process ID
+  - `GET`: Returns this README documentation
   - `POST`: Accepts a plugin .zip file and performs hot reload with streaming progress output
 
-- **Streaming Progress**: POST responses stream progress updates in real-time, showing each step of the reload process
+- **Streaming Progress**: POST responses stream progress updates in real-time using chunked transfer encoding
 
 - **IDE Notifications**: Shows balloon notifications in the IDE for reload progress and results
 
 - **Process Discovery**: Creates a marker file `.<pid>.hot-reload` in the user's home directory for external tools to discover running IDE instances
 
 - **Authentication**: POST requests require a Bearer token that's stored in the marker file
+
+- **Nested Jar Support**: Extracts plugin ID from both flat structure (`META-INF/plugin.xml`) and IntelliJ's standard nested jar structure (`plugin-name/lib/plugin-name.jar` containing `META-INF/plugin.xml`)
+
+- **Self-Reload Prevention**: The hot-reload plugin cannot reload itself (the reload code would be unloaded mid-execution). Attempting to do so returns a clear error message.
 
 - **Gradle Integration**: Provides `deployPlugin` task for plugin developers using IntelliJ Platform Gradle Plugin
 
@@ -88,51 +92,45 @@ This will:
 
 ### Manual Usage with curl
 
-#### Get Instructions
+#### Get Documentation
 
 ```bash
 curl http://localhost:63342/api/plugin-hot-reload
 ```
 
-Response:
-```json
-{
-  "status": "ok",
-  "pid": 12345,
-  "usage": {
-    "GET": "Returns this information",
-    "POST": "Upload a plugin .zip file to hot-reload it (requires Authorization header)"
-  },
-  "authentication": "POST requires 'Authorization: Bearer <token>' header. Token is in the marker file.",
-  "response": "POST returns streaming text/plain with progress updates, one message per line",
-  "example": "curl -X POST -H 'Authorization: Bearer <token>' --data-binary @plugin.zip http://localhost:<port>/api/plugin-hot-reload"
-}
-```
+Returns this README as `text/markdown`.
 
 #### Hot Reload a Plugin
 
 First, get the token from the marker file:
 
 ```bash
-# Find the marker file
+# Find the marker file (PID varies)
 ls ~/.*hot-reload
 
 # Read the token (second line)
 TOKEN=$(sed -n '2p' ~/.<pid>.hot-reload)
 
 # Deploy the plugin with streaming output
-curl -X POST -H "Authorization: $TOKEN" --data-binary @my-plugin.zip http://localhost:63342/api/plugin-hot-reload
+# -N disables buffering for real-time streaming
+curl -N -X POST -H "Authorization: $TOKEN" --data-binary @my-plugin.zip \
+  http://localhost:63342/api/plugin-hot-reload
 ```
+
+**Important**: Use `curl -N` (or `--no-buffer`) to see streaming output in real-time. Without it, curl buffers the response and only shows output when complete.
 
 Example streaming output:
 ```
-Starting plugin hot reload, zip size: 123456 bytes
+Starting plugin hot reload, zip size: 7,601,343 bytes
 Extracting plugin ID from zip...
 Plugin ID: com.example.my-plugin
 Looking for existing plugin...
 Existing plugin: My Plugin, path: /path/to/plugins/my-plugin
 Unloading existing plugin: My Plugin
 Plugin unloaded successfully
+Removing old plugin at: /path/to/plugins/my-plugin
+Old plugin folder removed
+Loading plugin descriptor from zip...
 Installing and loading plugin: My Plugin (1.0.0)
 Plugin My Plugin reloaded successfully
 SUCCESS
@@ -140,7 +138,8 @@ SUCCESS
 
 ### Response Format
 
-The POST endpoint returns a streaming `text/plain` response with progress messages, one per line.
+The POST endpoint returns a streaming `text/plain` response with chunked transfer encoding. Progress messages appear one per line as each step completes.
+
 The last line is always either `SUCCESS` or `FAILED`.
 
 Error messages are prefixed with `ERROR: `.
@@ -173,16 +172,36 @@ Memory: 2048 MB
 
 ## How It Works
 
-The plugin will:
-1. Extract the plugin ID from `META-INF/plugin.xml` in the zip
-2. Unload the existing plugin with that ID (if present)
-3. Remove the old plugin folder
-4. Install the new plugin from the zip
-5. Load the new plugin dynamically
+The plugin reload process:
 
-Progress is streamed to the HTTP response in real-time and also shown as IDE balloon notifications.
+1. **Extract plugin ID** from the uploaded zip file
+   - First checks for `META-INF/plugin.xml` at the top level (flat structure)
+   - If not found, searches inside jars in `*/lib/*.jar` for `META-INF/plugin.xml` (nested structure)
+   - This handles both development builds and production IntelliJ plugin zips
+
+2. **Check for self-reload** - if the plugin ID matches the hot-reload plugin itself, reject with error (cannot reload ourselves)
+
+3. **Find existing plugin** by ID using `PluginManagerCore.getPlugin(pluginId)`
+
+4. **Check if dynamic unload is possible** using `DynamicPlugins.checkCanUnloadWithoutRestart()`
+
+5. **Unload existing plugin** using `DynamicPlugins.unloadPlugin()`
+
+6. **Delete old plugin folder** (renames to `.old.<timestamp>` first for safety, then deletes)
+
+7. **Load plugin descriptor** from the zip using `loadDescriptorFromArtifact()`
+
+8. **Install and load** the new plugin using `PluginInstaller.installAndLoadDynamicPlugin()`
+
+Progress is streamed to the HTTP response in real-time using chunked transfer encoding, and also shown as IDE balloon notifications.
 
 **Note**: Not all plugins support dynamic reload. If dynamic reload fails, an IDE restart will be required.
+
+## Limitations
+
+- **Cannot reload itself**: The hot-reload plugin cannot reload itself. To update the hot-reload plugin, restart the IDE.
+- **Not all plugins support dynamic reload**: Some plugins have extensions or services that prevent unloading. The plugin will report this and may require an IDE restart.
+- **Memory leaks possible**: If a plugin doesn't properly clean up resources, memory leaks may occur after reload.
 
 ## Building
 
@@ -193,14 +212,14 @@ Progress is streamed to the HTTP response in real-time and also shown as IDE bal
 # Run tests
 ./gradlew test
 
+# Run specific tests
+./gradlew test --tests "*PluginHotReloadServiceTest*"
+
 # Run plugin in a sandboxed IntelliJ instance
 ./gradlew runIde
 
 # Build distributable plugin ZIP
 ./gradlew buildPlugin
-
-# List discovered hot-reload endpoints
-./gradlew listHotReloadEndpoints
 
 # Deploy to all running IDEs
 ./gradlew deployPlugin
@@ -214,20 +233,59 @@ The built plugin will be in `build/distributions/`.
 
 ```
 src/main/kotlin/com/jonnyzzz/intellij/hotreload/
+├── HotReloadBundle.kt           # Message bundle for i18n
 ├── HotReloadHttpHandler.kt      # HTTP REST endpoint with streaming response
 ├── HotReloadMarkerService.kt    # Marker file management (Disposable)
 ├── HotReloadNotifications.kt    # IDE balloon notifications
 ├── HotReloadStartupActivity.kt  # Startup trigger for marker service
 └── PluginHotReloadService.kt    # Plugin reload business logic with progress callbacks
+
+src/main/resources/
+├── META-INF/plugin.xml          # Plugin descriptor
+├── messages/HotReloadBundle.properties  # Localized messages
+└── hot-reload/README.md         # This file (served via GET endpoint)
+
+src/test/kotlin/com/jonnyzzz/intellij/hotreload/
+├── MarkerFileTest.kt            # Marker file tests
+└── PluginHotReloadServiceTest.kt # Plugin ID extraction and reload tests
 ```
 
 ### Key APIs Used
 
-- `DynamicPlugins.allowLoadUnloadWithoutRestart()` - Check if plugin supports hot reload
-- `PluginInstaller.unloadDynamicPlugin()` - Unload a plugin
+- `DynamicPlugins.checkCanUnloadWithoutRestart()` - Check if plugin supports hot reload
+- `DynamicPlugins.unloadPlugin()` - Unload a plugin
 - `PluginInstaller.installAndLoadDynamicPlugin()` - Install and load a plugin
 - `loadDescriptorFromArtifact()` - Load plugin descriptor from zip file
+- `PluginManager.getPluginByClass()` - Get plugin descriptor for a class (used for self-detection)
 - `NotificationGroupManager` - IDE balloon notifications
+
+### Key Implementation Details
+
+#### Plugin ID Extraction
+
+The `extractPluginId()` function handles two plugin zip structures:
+
+1. **Flat structure** (development builds):
+   ```
+   plugin-name/META-INF/plugin.xml
+   ```
+
+2. **Nested jar structure** (production builds from `buildPlugin`):
+   ```
+   plugin-name/lib/plugin-name.jar
+     └── META-INF/plugin.xml
+   ```
+
+#### Self-Reload Detection
+
+The plugin dynamically detects its own ID using:
+```kotlin
+fun getSelfPluginId(): String {
+    return PluginManager.getPluginByClass(PluginHotReloadService::class.java)
+        ?.pluginId?.idString
+        ?: "com.jonnyzzz.intellij.hot-reload"  // fallback for tests
+}
+```
 
 ## Security
 
