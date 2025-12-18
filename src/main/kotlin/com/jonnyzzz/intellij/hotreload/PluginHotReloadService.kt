@@ -1,7 +1,6 @@
 package com.jonnyzzz.intellij.hotreload
 
 import com.intellij.ide.plugins.*
-import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.extensions.PluginId
@@ -21,6 +20,10 @@ import javax.xml.parsers.DocumentBuilderFactory
  * 3. Remove the old plugin folder
  * 4. Extract the new plugin to the plugins folder
  * 5. Load the new plugin dynamically
+ *
+ * Note: This service uses IntelliJ Platform internal APIs for plugin management
+ * (DynamicPlugins, PluginInstaller, loadDescriptorFromArtifact) as there are no
+ * public alternatives for dynamic plugin loading. These APIs may change without notice.
  */
 @Service(Service.Level.APP)
 class PluginHotReloadService {
@@ -81,7 +84,6 @@ class PluginHotReloadService {
      */
     fun reloadPluginFromFile(pluginIdString: String, zipFile: Path): ReloadResult {
         val pluginId = PluginId.getId(pluginIdString)
-        val pluginsPath = Path.of(PathManager.getPluginsPath())
 
         // Step 3: Find existing plugin
         val existingPlugin = PluginManagerCore.getPlugin(pluginId)
@@ -90,8 +92,10 @@ class PluginHotReloadService {
         LOG.info("Existing plugin: ${existingPlugin?.name ?: "not found"}, path: $existingPluginPath")
 
         // Step 4: Check if dynamic reload is possible
+        // Using internal API: DynamicPlugins - no public alternative exists
         if (existingPlugin != null) {
             val descriptor = existingPlugin as? IdeaPluginDescriptorImpl
+            @Suppress("UnstableApiUsage")
             if (descriptor != null && !DynamicPlugins.allowLoadUnloadWithoutRestart(descriptor)) {
                 LOG.warn("Plugin $pluginId does not support dynamic reload")
                 // Still try to do it, but note that restart may be required
@@ -99,10 +103,12 @@ class PluginHotReloadService {
         }
 
         // Step 5: Unload existing plugin if it exists and is enabled
+        // Using internal API: PluginInstaller.unloadDynamicPlugin - no public alternative exists
         if (existingPlugin != null && !PluginManagerCore.isDisabled(pluginId)) {
             val descriptor = existingPlugin as? IdeaPluginDescriptorImpl
             if (descriptor != null) {
                 LOG.info("Unloading existing plugin: ${existingPlugin.name}")
+                @Suppress("UnstableApiUsage")
                 val unloaded = PluginInstaller.unloadDynamicPlugin(null, descriptor, true)
                 if (!unloaded) {
                     LOG.warn("Failed to unload plugin dynamically, restart may be required")
@@ -130,6 +136,8 @@ class PluginHotReloadService {
         }
 
         // Step 7: Load descriptor from the zip file
+        // Using internal API: loadDescriptorFromArtifact - no public alternative exists
+        @Suppress("UnstableApiUsage")
         val newDescriptor = try {
             loadDescriptorFromArtifact(zipFile, null)
         } catch (e: Exception) {
@@ -147,6 +155,8 @@ class PluginHotReloadService {
         LOG.info("Installing and loading plugin: $pluginName ($pluginVersion)")
 
         // Step 8: Install and load the plugin dynamically
+        // Using internal API: PluginInstaller.installAndLoadDynamicPlugin - no public alternative exists
+        @Suppress("UnstableApiUsage")
         val loaded = try {
             PluginInstaller.installAndLoadDynamicPlugin(zipFile, null, newDescriptor as IdeaPluginDescriptorImpl)
         } catch (e: Exception) {
