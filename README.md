@@ -33,73 +33,44 @@ An IntelliJ IDEA plugin that provides an HTTP REST endpoint for dynamically relo
 
 ### For Plugin Developers (Recommended)
 
-If you're developing an IntelliJ plugin using the IntelliJ Platform Gradle Plugin, add the hot-reload Gradle tasks to your `build.gradle.kts`:
+If you're developing an IntelliJ plugin using the IntelliJ Platform Gradle Plugin, add this task to your `build.gradle.kts`:
 
 ```kotlin
 import java.net.HttpURLConnection
 import java.net.URI
 
-data class HotReloadEndpoint(val url: String, val token: String, val ideInfo: String)
-
-fun findHotReloadEndpoints(): List<HotReloadEndpoint> {
-    val home = File(System.getProperty("user.home"))
-    return home.listFiles { f -> f.name.matches(Regex("\\.\\d+\\.hot-reload")) }
-        ?.mapNotNull { f ->
-            val lines = f.readLines()
-            if (lines.size >= 3) HotReloadEndpoint(lines[0], lines[1], lines.drop(4).firstOrNull() ?: "") else null
-        }
-        ?.distinctBy { it.url }
-        ?: emptyList()
-}
-
-fun deployToEndpoint(endpoint: HotReloadEndpoint, zip: File): Boolean {
-    val conn = (URI(endpoint.url).toURL().openConnection() as HttpURLConnection).apply {
-        requestMethod = "POST"
-        doOutput = true
-        setRequestProperty("Authorization", endpoint.token)
-        setRequestProperty("Content-Type", "application/octet-stream")
-        connectTimeout = 5000
-        readTimeout = 300000
-    }
-
-    conn.outputStream.use { out -> zip.inputStream().use { it.copyTo(out) } }
-
-    if (conn.responseCode !in 200..299) {
-        println("  ✗ HTTP ${conn.responseCode}")
-        return false
-    }
-
-    var lastLine = ""
-    conn.inputStream.bufferedReader().forEachLine { line ->
-        println("  $line")
-        lastLine = line
-    }
-
-    return lastLine == "SUCCESS"
-}
-
 val deployPlugin by tasks.registering {
     group = "intellij platform"
-    description = "Deploy plugin to running IDEs with hot-reload"
+    description = "Deploy plugin to running IDEs"
     dependsOn(tasks.named("buildPlugin"))
-
     doLast {
         val zip = tasks.named("buildPlugin").get().outputs.files.singleFile
-        val endpoints = findHotReloadEndpoints()
+        val home = File(System.getProperty("user.home"))
+        val endpoints = home.listFiles { f -> f.name.matches(Regex("\\.\\d+\\.hot-reload")) }
+            ?.mapNotNull { f ->
+                val pid = Regex("\\.(\\d+)\\.").find(f.name)?.groupValues?.get(1)?.toLongOrNull() ?: return@mapNotNull null
+                if (!ProcessHandle.of(pid).isPresent) return@mapNotNull null
+                val lines = f.readLines().takeIf { it.size >= 2 } ?: return@mapNotNull null
+                lines[0] to lines[1]
+            }?.distinctBy { it.first } ?: emptyList()
 
-        if (endpoints.isEmpty()) {
-            println("No hot-reload endpoints found in ~")
-            return@doLast
-        }
+        if (endpoints.isEmpty()) { println("No running IDEs found"); return@doLast }
 
-        var ok = 0
-        var fail = 0
-        endpoints.forEach { ep ->
-            println("\n${ep.ideInfo.ifEmpty { ep.url }}")
-            if (deployToEndpoint(ep, zip)) ok++ else fail++
+        endpoints.forEach { (url, token) ->
+            println("\n→ $url")
+            val conn = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"; doOutput = true
+                setRequestProperty("Authorization", token)
+                setRequestProperty("Content-Type", "application/octet-stream")
+                connectTimeout = 5000; readTimeout = 300000
+            }
+            conn.outputStream.use { out -> zip.inputStream().use { it.copyTo(out) } }
+            if (conn.responseCode in 200..299) {
+                conn.inputStream.bufferedReader().forEachLine { println("  $it") }
+            } else {
+                println("  ✗ HTTP ${conn.responseCode}")
+            }
         }
-        println("\nDone: $ok ok, $fail failed")
-        if (fail > 0 && ok == 0) throw GradleException("All deployments failed")
     }
 }
 ```
