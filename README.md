@@ -6,7 +6,11 @@ An IntelliJ IDEA plugin that provides an HTTP REST endpoint for dynamically relo
 
 - **HTTP REST Endpoint** (`/api/plugin-hot-reload`):
   - `GET`: Returns usage instructions and current process ID
-  - `POST`: Accepts a plugin .zip file and performs hot reload (requires authentication)
+  - `POST`: Accepts a plugin .zip file and performs hot reload with streaming progress output
+
+- **Streaming Progress**: POST responses stream progress updates in real-time, showing each step of the reload process
+
+- **IDE Notifications**: Shows balloon notifications in the IDE for reload progress and results
 
 - **Process Discovery**: Creates a marker file `.<pid>.hot-reload` in the user's home directory for external tools to discover running IDE instances
 
@@ -67,7 +71,7 @@ fun findHotReloadEndpoints(): List<HotReloadEndpoint> {
     }.distinctBy { it.url }
 }
 
-// Function to deploy to an endpoint
+// Function to deploy with streaming output
 fun deployToEndpoint(endpoint: HotReloadEndpoint, pluginZip: File): Boolean {
     return try {
         val url = URI(endpoint.url).toURL()
@@ -77,7 +81,7 @@ fun deployToEndpoint(endpoint: HotReloadEndpoint, pluginZip: File): Boolean {
         connection.setRequestProperty("Authorization", endpoint.token)
         connection.setRequestProperty("Content-Type", "application/octet-stream")
         connection.connectTimeout = 5000
-        connection.readTimeout = 30000
+        connection.readTimeout = 300000
 
         connection.outputStream.use { output ->
             pluginZip.inputStream().use { input ->
@@ -85,10 +89,26 @@ fun deployToEndpoint(endpoint: HotReloadEndpoint, pluginZip: File): Boolean {
             }
         }
 
-        val responseCode = connection.responseCode
-        responseCode in 200..299
+        if (connection.responseCode !in 200..299) {
+            println("Failed: ${connection.responseCode}")
+            return false
+        }
+
+        // Stream progress output
+        var success = false
+        connection.inputStream.bufferedReader().useLines { lines ->
+            for (line in lines) {
+                when {
+                    line.startsWith("INFO: ") -> println("  ${line.removePrefix("INFO: ")}")
+                    line.startsWith("ERROR: ") -> println("  ✗ ${line.removePrefix("ERROR: ")}")
+                    line.startsWith("RESULT: SUCCESS") -> success = true
+                    line.startsWith("RESULT: FAILED") -> success = false
+                }
+            }
+        }
+        success
     } catch (e: Exception) {
-        println("Failed to deploy: ${e.message}")
+        println("Error: ${e.message}")
         false
     }
 }
@@ -110,10 +130,11 @@ val deployPlugin by tasks.registering {
 
         println("Deploying to ${endpoints.size} endpoint(s)...")
         endpoints.forEach { endpoint ->
+            println("\nDeploying to: ${endpoint.url}")
             if (deployToEndpoint(endpoint, pluginZip)) {
-                println("✓ Deployed to ${endpoint.url}")
+                println("✓ Deployed successfully")
             } else {
-                println("✗ Failed to deploy to ${endpoint.url}")
+                println("✗ Deployment failed")
             }
         }
     }
@@ -129,7 +150,7 @@ Then run:
 This will:
 1. Build your plugin
 2. Find all running IDEs with the hot-reload plugin installed
-3. Deploy your plugin to each IDE
+3. Deploy your plugin to each IDE with streaming progress output
 
 ### Manual Usage with curl
 
@@ -149,6 +170,7 @@ Response:
     "POST": "Upload a plugin .zip file to hot-reload it (requires Authorization header)"
   },
   "authentication": "POST requires 'Authorization: Bearer <token>' header. Token is in the marker file.",
+  "response": "POST returns streaming text/plain with progress updates, one message per line",
   "example": "curl -X POST -H 'Authorization: Bearer <token>' --data-binary @plugin.zip http://localhost:<port>/api/plugin-hot-reload"
 }
 ```
@@ -164,9 +186,42 @@ ls ~/.*hot-reload
 # Read the token (second line)
 TOKEN=$(sed -n '2p' ~/.<pid>.hot-reload)
 
-# Deploy the plugin
+# Deploy the plugin with streaming output
 curl -X POST -H "Authorization: $TOKEN" --data-binary @my-plugin.zip http://localhost:63342/api/plugin-hot-reload
 ```
+
+Example streaming output:
+```
+INFO: Starting plugin hot reload, zip size: 123456 bytes
+INFO: Extracting plugin ID from zip...
+INFO: Plugin ID: com.example.my-plugin
+INFO: Looking for existing plugin...
+INFO: Existing plugin: My Plugin, path: /path/to/plugins/my-plugin
+INFO: Unloading existing plugin: My Plugin
+INFO: Plugin unloaded successfully
+INFO: Removing old plugin at: /path/to/plugins/my-plugin
+INFO: Old plugin folder removed
+INFO: Loading plugin descriptor from zip...
+INFO: Installing and loading plugin: My Plugin (1.0.0)
+INFO: Plugin My Plugin reloaded successfully
+
+RESULT: SUCCESS
+PLUGIN: My Plugin
+```
+
+### Response Format
+
+The POST endpoint returns a streaming `text/plain` response with one message per line:
+
+| Prefix | Description |
+|--------|-------------|
+| `INFO: ` | Progress message |
+| `ERROR: ` | Error message |
+| `RESULT: SUCCESS` | Reload completed successfully |
+| `RESULT: FAILED` | Reload failed |
+| `RESULT: RESTART_REQUIRED` | Plugin installed but IDE restart needed |
+| `PLUGIN: ` | Plugin name |
+| `MESSAGE: ` | Additional status message |
 
 ### Marker File Format
 
@@ -203,6 +258,8 @@ The plugin will:
 4. Install the new plugin from the zip
 5. Load the new plugin dynamically
 
+Progress is streamed to the HTTP response in real-time and also shown as IDE balloon notifications.
+
 **Note**: Not all plugins support dynamic reload. If dynamic reload fails, an IDE restart will be required.
 
 ## Building
@@ -235,10 +292,11 @@ The built plugin will be in `build/distributions/`.
 
 ```
 src/main/kotlin/com/jonnyzzz/intellij/hotreload/
-├── HotReloadHttpHandler.kt      # HTTP REST endpoint handler
+├── HotReloadHttpHandler.kt      # HTTP REST endpoint with streaming response
 ├── HotReloadMarkerService.kt    # Marker file management (Disposable)
+├── HotReloadNotifications.kt    # IDE balloon notifications
 ├── HotReloadStartupActivity.kt  # Startup trigger for marker service
-└── PluginHotReloadService.kt    # Plugin reload business logic
+└── PluginHotReloadService.kt    # Plugin reload business logic with progress callbacks
 ```
 
 ### Key APIs Used
@@ -247,6 +305,7 @@ src/main/kotlin/com/jonnyzzz/intellij/hotreload/
 - `PluginInstaller.unloadDynamicPlugin()` - Unload a plugin
 - `PluginInstaller.installAndLoadDynamicPlugin()` - Install and load a plugin
 - `loadDescriptorFromArtifact()` - Load plugin descriptor from zip file
+- `NotificationGroupManager` - IDE balloon notifications
 
 ## Security
 

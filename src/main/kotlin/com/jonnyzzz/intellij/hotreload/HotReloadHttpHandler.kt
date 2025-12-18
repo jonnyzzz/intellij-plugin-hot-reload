@@ -1,14 +1,18 @@
 package com.jonnyzzz.intellij.hotreload
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
 import io.netty.buffer.Unpooled
+import io.netty.channel.ChannelFutureListener
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
 import org.jetbrains.ide.HttpRequestHandler
 import org.jetbrains.io.addCommonHeaders
 import org.jetbrains.io.send
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * HTTP REST endpoint handler for plugin hot reload functionality.
@@ -16,6 +20,7 @@ import org.jetbrains.io.send
  *
  * GET: Returns usage instructions (no authentication required)
  * POST: Accepts plugin zip file and performs hot reload (requires Bearer token)
+ *       Returns streaming text/plain response with progress updates
  *
  * Authentication:
  * POST requests require an Authorization header with a Bearer token that matches
@@ -56,6 +61,7 @@ class HotReloadHttpHandler : HttpRequestHandler() {
                 "POST": "Upload a plugin .zip file to hot-reload it (requires Authorization header)"
               },
               "authentication": "POST requires 'Authorization: Bearer <token>' header. Token is in the marker file.",
+              "response": "POST returns streaming text/plain with progress updates, one message per line",
               "example": "curl -X POST -H 'Authorization: Bearer <token>' --data-binary @plugin.zip http://localhost:<port>/api/plugin-hot-reload"
             }
         """.trimIndent()
@@ -94,28 +100,93 @@ class HotReloadHttpHandler : HttpRequestHandler() {
 
         log.info("Received plugin zip file, size: ${bytes.size} bytes")
 
-        // Process the plugin reload on EDT
-        ApplicationManager.getApplication().invokeLater {
-            try {
-                val reloadService = service<PluginHotReloadService>()
-                val result = reloadService.reloadPlugin(bytes)
+        // Start streaming response
+        val channel = context.channel()
+        val response = DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK)
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain; charset=utf-8")
+        response.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED)
+        response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE)
+        response.addCommonHeaders()
 
-                // Note: Response already sent, this is for logging
-                if (result.success) {
-                    log.info("Plugin hot reload successful: ${result.message}")
-                } else {
-                    log.warn("Plugin hot reload failed: ${result.message}")
-                }
-            } catch (e: Exception) {
-                log.error("Plugin hot reload failed", e)
+        channel.write(response)
+
+        // Helper to write a line and flush
+        fun writeLine(line: String) {
+            val data = Unpooled.copiedBuffer("$line\n", Charsets.UTF_8)
+            channel.writeAndFlush(DefaultHttpContent(data))
+        }
+
+        // Create progress reporter that streams to the HTTP response
+        val progressReporter = object : PluginHotReloadService.ProgressReporter {
+            override fun report(message: String) {
+                log.info("Progress: $message")
+                writeLine("INFO: $message")
+            }
+
+            override fun reportError(message: String) {
+                log.warn("Error: $message")
+                writeLine("ERROR: $message")
             }
         }
 
-        // Send immediate response that processing has started
-        sendJsonResponse(
-            context, request, HttpResponseStatus.ACCEPTED,
-            """{"status": "processing", "message": "Plugin reload initiated"}"""
-        )
+        // Process the plugin reload on EDT and wait for completion
+        val latch = CountDownLatch(1)
+        var result: PluginHotReloadService.ReloadResult? = null
+        var notification: HotReloadNotifications.ProgressNotification? = null
+
+        ApplicationManager.getApplication().invokeLater({
+            try {
+                // Show progress notification
+                notification = HotReloadNotifications.showProgress("plugin")
+
+                val reloadService = service<PluginHotReloadService>()
+                result = reloadService.reloadPlugin(bytes, progressReporter)
+
+                // Update notification based on result
+                val r = result!!
+                if (r.success) {
+                    notification?.success()
+                    HotReloadNotifications.showSuccess(r.pluginName ?: "Unknown")
+                } else {
+                    notification?.error(r.message)
+                }
+            } catch (e: Exception) {
+                log.error("Plugin hot reload failed", e)
+                progressReporter.reportError("Unexpected error: ${e.message}")
+                notification?.error(e.message ?: "Unknown error")
+                result = PluginHotReloadService.ReloadResult(false, "Unexpected error: ${e.message}")
+            } finally {
+                latch.countDown()
+            }
+        }, ModalityState.nonModal())
+
+        // Wait for completion (with timeout)
+        val completed = latch.await(5, TimeUnit.MINUTES)
+
+        if (!completed) {
+            writeLine("ERROR: Operation timed out")
+            writeLine("RESULT: TIMEOUT")
+        } else {
+            val r = result
+            if (r != null) {
+                writeLine("")
+                if (r.success) {
+                    writeLine("RESULT: SUCCESS")
+                    writeLine("PLUGIN: ${r.pluginName ?: r.pluginId ?: "Unknown"}")
+                } else {
+                    writeLine("RESULT: ${if (r.restartRequired) "RESTART_REQUIRED" else "FAILED"}")
+                    writeLine("MESSAGE: ${r.message}")
+                    if (r.pluginName != null) {
+                        writeLine("PLUGIN: ${r.pluginName}")
+                    }
+                }
+            }
+        }
+
+        // End chunked response
+        channel.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT)
+            .addListener(ChannelFutureListener.CLOSE)
+
         return true
     }
 

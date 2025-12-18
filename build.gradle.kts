@@ -98,7 +98,7 @@ fun findHotReloadEndpoints(): List<HotReloadEndpoint> {
 }
 
 /**
- * Deploys a plugin zip file to a hot-reload endpoint.
+ * Deploys a plugin zip file to a hot-reload endpoint with streaming output.
  * Returns true if successful, false otherwise.
  */
 fun deployToEndpoint(endpoint: HotReloadEndpoint, pluginZip: File): Boolean {
@@ -110,8 +110,9 @@ fun deployToEndpoint(endpoint: HotReloadEndpoint, pluginZip: File): Boolean {
         connection.setRequestProperty("Authorization", endpoint.token)
         connection.setRequestProperty("Content-Type", "application/octet-stream")
         connection.connectTimeout = 5000
-        connection.readTimeout = 30000
+        connection.readTimeout = 300000  // 5 minutes for long operations
 
+        // Send the plugin zip
         connection.outputStream.use { output ->
             pluginZip.inputStream().use { input ->
                 input.copyTo(output)
@@ -119,22 +120,60 @@ fun deployToEndpoint(endpoint: HotReloadEndpoint, pluginZip: File): Boolean {
         }
 
         val responseCode = connection.responseCode
-        val responseMessage = try {
-            connection.inputStream.bufferedReader().readText()
-        } catch (e: Exception) {
-            connection.errorStream?.bufferedReader()?.readText() ?: e.message
-        }
 
-        if (responseCode in 200..299) {
-            println("  ✓ Successfully deployed to ${endpoint.url}")
-            println("    Response: $responseMessage")
-            true
-        } else {
+        if (responseCode !in 200..299) {
+            val errorMessage = try {
+                connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+            } catch (e: Exception) {
+                e.message ?: "Unknown error"
+            }
             println("  ✗ Failed to deploy to ${endpoint.url}")
             println("    Response code: $responseCode")
-            println("    Response: $responseMessage")
-            false
+            println("    Error: $errorMessage")
+            return false
         }
+
+        // Stream the response line by line
+        var success = false
+        var pluginName: String? = null
+
+        connection.inputStream.bufferedReader().useLines { lines ->
+            for (line in lines) {
+                when {
+                    line.startsWith("INFO: ") -> {
+                        println("    ${line.removePrefix("INFO: ")}")
+                    }
+                    line.startsWith("ERROR: ") -> {
+                        println("    ✗ ${line.removePrefix("ERROR: ")}")
+                    }
+                    line.startsWith("RESULT: SUCCESS") -> {
+                        success = true
+                    }
+                    line.startsWith("RESULT: FAILED") || line.startsWith("RESULT: RESTART_REQUIRED") -> {
+                        success = false
+                    }
+                    line.startsWith("PLUGIN: ") -> {
+                        pluginName = line.removePrefix("PLUGIN: ")
+                    }
+                    line.startsWith("MESSAGE: ") -> {
+                        if (!success) {
+                            println("    Message: ${line.removePrefix("MESSAGE: ")}")
+                        }
+                    }
+                    line.isNotBlank() -> {
+                        println("    $line")
+                    }
+                }
+            }
+        }
+
+        if (success) {
+            println("  ✓ Successfully deployed ${pluginName ?: "plugin"} to ${endpoint.url}")
+        } else {
+            println("  ✗ Deployment to ${endpoint.url} failed")
+        }
+
+        success
     } catch (e: Exception) {
         println("  ✗ Failed to connect to ${endpoint.url}")
         println("    Error: ${e.message}")
@@ -150,7 +189,7 @@ fun deployToEndpoint(endpoint: HotReloadEndpoint, pluginZip: File): Boolean {
  * This task:
  * 1. Builds the plugin zip file
  * 2. Scans for marker files (.<pid>.hot-reload) in user home directory
- * 3. Deploys to all discovered endpoints
+ * 3. Deploys to all discovered endpoints with streaming progress output
  * 4. Reports success/failure for each endpoint
  */
 val deployPlugin by tasks.registering {
@@ -198,6 +237,7 @@ val deployPlugin by tasks.registering {
         }
 
         println()
+        println("=" .repeat(60))
         println("Deployment complete: $successCount successful, $failureCount failed")
 
         if (failureCount > 0 && successCount == 0) {

@@ -18,6 +18,11 @@
         <!-- Startup activity to initialize marker service -->
         <postStartupActivity
             implementation="com.jonnyzzz.intellij.hotreload.HotReloadStartupActivity"/>
+
+        <!-- Notification group for hot reload progress -->
+        <notificationGroup
+            id="Plugin Hot Reload"
+            displayType="BALLOON"/>
     </extensions>
 
 </idea-plugin>
