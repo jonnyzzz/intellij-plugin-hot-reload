@@ -41,10 +41,13 @@ class HotReloadHttpHandler : HttpRequestHandler() {
     }
 
     private fun handleGet(request: FullHttpRequest, context: ChannelHandlerContext): Boolean {
-        val json = """{"status":"ok","pid":${ProcessHandle.current().pid()}}"""
-        val content = Unpooled.copiedBuffer(json, Charsets.UTF_8)
+        val readme = javaClass.getResourceAsStream("/hot-reload/README.md")
+            ?.bufferedReader()?.readText()
+            ?: "README.md not found in resources"
+
+        val content = Unpooled.copiedBuffer(readme, Charsets.UTF_8)
         val response = DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, content)
-        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json")
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/markdown; charset=utf-8")
         response.addCommonHeaders()
         response.send(context.channel(), request)
         return true
@@ -76,7 +79,15 @@ class HotReloadHttpHandler : HttpRequestHandler() {
         channel.write(response)
 
         fun writeLine(line: String) {
-            channel.writeAndFlush(DefaultHttpContent(Unpooled.copiedBuffer("$line\n", Charsets.UTF_8)))
+            log.info("Hot reload progress: $line")
+            // Execute write on the channel's event loop for thread safety
+            if (channel.eventLoop().inEventLoop()) {
+                channel.writeAndFlush(DefaultHttpContent(Unpooled.copiedBuffer("$line\n", Charsets.UTF_8)))
+            } else {
+                channel.eventLoop().execute {
+                    channel.writeAndFlush(DefaultHttpContent(Unpooled.copiedBuffer("$line\n", Charsets.UTF_8)))
+                }
+            }
         }
 
         val progressReporter = object : PluginHotReloadService.ProgressReporter {

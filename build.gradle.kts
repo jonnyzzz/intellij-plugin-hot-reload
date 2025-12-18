@@ -40,6 +40,13 @@ intellijPlatform {
 
 tasks.test { useJUnit() }
 
+// Copy README.md to resources so it can be served via GET endpoint
+tasks.processResources {
+    from(layout.projectDirectory.file("README.md")) {
+        into("hot-reload")
+    }
+}
+
 // Deploy plugin to local IntelliJ 253 installation
 val deployPluginLocallyTo253 by tasks.registering(Sync::class) {
     dependsOn(tasks.buildPlugin)

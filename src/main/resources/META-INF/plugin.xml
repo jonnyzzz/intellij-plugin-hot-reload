@@ -1,12 +1,17 @@
 <idea-plugin>
     <id>com.jonnyzzz.intellij.hot-reload</id>
-    <name>Plugin Hot Reload</name>
-    <vendor>jonnyzzz.com</vendor>
+    <name>Hot Reload</name>
+    <vendor email="intellij@jonnyzzz.com" url="https://jonnyzzz.com">jonnyzzz.com</vendor>
 
     <description><![CDATA[
-    Provides an HTTP REST endpoint for plugin hot reload functionality.
-    Creates a marker file under user home directory for process discovery.
+Provides an HTTP REST endpoint for plugin hot reload functionality.
+Creates a marker file under user home directory for process discovery.
+Enables dynamic plugin installation and unloading without IDE restart.
     ]]></description>
+
+    <change-notes><![CDATA[
+Initial release with HTTP-based plugin hot reload support.
+    ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
 
