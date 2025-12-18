@@ -1,5 +1,7 @@
 import java.net.HttpURLConnection
 import java.net.URI
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 plugins {
     id("org.jetbrains.intellij.platform") version "2.10.5"
@@ -7,7 +9,7 @@ plugins {
 }
 
 group = "com.jonnyzzz.intellij"
-version = "1.0.0-SNAPSHOT"
+version = "1.0.0-SNAPSHOT-${LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm"))}"
 
 repositories {
     mavenCentral()
@@ -37,6 +39,29 @@ intellijPlatform {
 }
 
 tasks.test { useJUnit() }
+
+// Deploy plugin to local IntelliJ 253 installation
+val deployPluginLocallyTo253 by tasks.registering(Sync::class) {
+    dependsOn(tasks.buildPlugin)
+    group = "intellij platform"
+    outputs.upToDateWhen { false }
+
+    val targetName = rootProject.name
+    val targetDir = "${System.getenv("HOME")}/intellij-253/config/plugins/$targetName"
+
+    this.destinationDir = file(targetDir)
+    from(
+        tasks.buildPlugin
+            .map { it.archiveFile }
+            .map { zipTree(it) }
+    ) {
+        includeEmptyDirs = false
+        eachFile {
+            println(this)
+            this.path = this.path.substringAfter("/")
+        }
+    }
+}
 
 // Deploy plugin to running IDEs with hot-reload support
 val deployPlugin by tasks.registering {
