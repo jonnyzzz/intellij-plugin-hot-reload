@@ -11,6 +11,6 @@ import com.intellij.openapi.startup.ProjectActivity
 class HotReloadStartupActivity : ProjectActivity {
     override suspend fun execute(project: Project) {
         // Trigger service initialization which creates the marker file
-        service<HotReloadMarkerService>()
+        service<HotReloadMarkerService>().createFiles()
     }
 }

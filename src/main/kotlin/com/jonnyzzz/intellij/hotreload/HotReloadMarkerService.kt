@@ -4,7 +4,8 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationNamesInfo
 import com.intellij.openapi.components.Service
-import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.util.Disposer
 import org.jetbrains.ide.BuiltInServerManager
 import java.nio.file.Files
 import java.nio.file.Path
@@ -27,11 +28,7 @@ import java.util.*
  */
 @Service(Service.Level.APP)
 class HotReloadMarkerService : Disposable {
-    companion object {
-        private val LOG = Logger.getInstance(HotReloadMarkerService::class.java)
-    }
-
-    private val markerFilePath: Path?
+    private val log = thisLogger()
 
     /**
      * The authentication token for this session.
@@ -39,37 +36,39 @@ class HotReloadMarkerService : Disposable {
      */
     val authToken: String = UUID.randomUUID().toString()
 
-    init {
+    fun createFiles() {
         val pid = ProcessHandle.current().pid()
         val userHome = System.getProperty("user.home")
         val markerFile = Path.of(userHome, ".$pid.hot-reload")
 
-        markerFilePath = try {
-            // Get the built-in server port
-            val port = BuiltInServerManager.getInstance().port
-            val url = "http://localhost:$port/api/plugin-hot-reload"
+        // Get the built-in server port
+        val port = BuiltInServerManager.getInstance().port
+        val url = "http://localhost:$port/api/plugin-hot-reload"
 
-            // Get current date/time
-            val dateTime = ZonedDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+        // Get current date/time
+        val dateTime = ZonedDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
 
-            // Get IDE info
-            val ideInfo = buildIdeInfo()
+        // Get IDE info
+        val ideInfo = buildIdeInfo()
 
-            // Build marker file content
-            val content = buildString {
-                appendLine(url)
-                appendLine("Bearer $authToken")
-                appendLine(dateTime)
-                appendLine()
-                append(ideInfo)
-            }
+        // Build marker file content
+        val content = buildString {
+            appendLine(url)
+            appendLine("Bearer $authToken")
+            appendLine(dateTime)
+            appendLine()
+            append(ideInfo)
+        }
 
+        runCatching {
             Files.writeString(markerFile, content)
-            LOG.info("Created hot-reload marker file: $markerFile")
-            markerFile
-        } catch (e: Exception) {
-            LOG.warn("Failed to create marker file: $markerFile", e)
-            null
+        }
+
+        log.info("Created hot-reload marker file: $markerFile")
+        Disposer.register(this) {
+            runCatching {
+                Files.deleteIfExists(markerFile)
+            }
         }
     }
 
@@ -107,16 +106,8 @@ class HotReloadMarkerService : Disposable {
         // Memory info
         val runtime = Runtime.getRuntime()
         val maxMemoryMb = runtime.maxMemory() / (1024 * 1024)
-        appendLine("Memory: ${maxMemoryMb} MB")
+        appendLine("Memory: $maxMemoryMb MB")
     }
 
-    override fun dispose() {
-        val path = markerFilePath ?: return
-        try {
-            Files.deleteIfExists(path)
-            LOG.info("Deleted hot-reload marker file: $path")
-        } catch (e: Exception) {
-            LOG.warn("Failed to delete marker file: $path", e)
-        }
-    }
+    override fun dispose() = Unit
 }

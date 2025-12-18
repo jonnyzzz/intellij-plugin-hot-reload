@@ -2,7 +2,7 @@ package com.jonnyzzz.intellij.hotreload
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
-import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.thisLogger
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
@@ -22,13 +22,11 @@ import org.jetbrains.io.send
  * the token in the marker file. The token is generated when the IDE starts.
  */
 class HotReloadHttpHandler : HttpRequestHandler() {
-    companion object {
-        private const val PREFIX = "api/plugin-hot-reload"
-        private val LOG = Logger.getInstance(HotReloadHttpHandler::class.java)
-    }
+    private val prefix = "api/plugin-hot-reload"
+    private val log = thisLogger()
 
     override fun isSupported(request: FullHttpRequest): Boolean {
-        if (!checkPrefix(request.uri(), PREFIX)) {
+        if (!checkPrefix(request.uri(), prefix)) {
             return false
         }
         val method = request.method()
@@ -73,7 +71,7 @@ class HotReloadHttpHandler : HttpRequestHandler() {
         val expectedToken = "Bearer ${markerService.authToken}"
 
         if (authHeader != expectedToken) {
-            LOG.warn("Unauthorized hot-reload attempt. Expected token hash: ${markerService.authToken.hashCode()}, got: ${authHeader?.hashCode()}")
+            log.warn("Unauthorized hot-reload attempt. Expected token hash: ${markerService.authToken.hashCode()}, got: ${authHeader?.hashCode()}")
             sendJsonResponse(
                 context, request, HttpResponseStatus.UNAUTHORIZED,
                 """{"error": "Unauthorized. Provide valid 'Authorization: Bearer <token>' header."}"""
@@ -94,7 +92,7 @@ class HotReloadHttpHandler : HttpRequestHandler() {
         val bytes = ByteArray(content.readableBytes())
         content.readBytes(bytes)
 
-        LOG.info("Received plugin zip file, size: ${bytes.size} bytes")
+        log.info("Received plugin zip file, size: ${bytes.size} bytes")
 
         // Process the plugin reload on EDT
         ApplicationManager.getApplication().invokeLater {
@@ -104,12 +102,12 @@ class HotReloadHttpHandler : HttpRequestHandler() {
 
                 // Note: Response already sent, this is for logging
                 if (result.success) {
-                    LOG.info("Plugin hot reload successful: ${result.message}")
+                    log.info("Plugin hot reload successful: ${result.message}")
                 } else {
-                    LOG.warn("Plugin hot reload failed: ${result.message}")
+                    log.warn("Plugin hot reload failed: ${result.message}")
                 }
             } catch (e: Exception) {
-                LOG.error("Plugin hot reload failed", e)
+                log.error("Plugin hot reload failed", e)
             }
         }
 

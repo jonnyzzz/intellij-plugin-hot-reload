@@ -2,7 +2,7 @@ package com.jonnyzzz.intellij.hotreload
 
 import com.intellij.ide.plugins.*
 import com.intellij.openapi.components.Service
-import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.util.io.NioFiles
 import java.io.ByteArrayInputStream
@@ -27,9 +27,7 @@ import javax.xml.parsers.DocumentBuilderFactory
  */
 @Service(Service.Level.APP)
 class PluginHotReloadService {
-    companion object {
-        private val LOG = Logger.getInstance(PluginHotReloadService::class.java)
-    }
+    private val log = thisLogger()
 
     data class ReloadResult(
         val success: Boolean,
@@ -42,13 +40,13 @@ class PluginHotReloadService {
      * Reload a plugin from the provided zip file bytes.
      */
     fun reloadPlugin(zipBytes: ByteArray): ReloadResult {
-        LOG.info("Starting plugin hot reload, zip size: ${zipBytes.size} bytes")
+        log.info("Starting plugin hot reload, zip size: ${zipBytes.size} bytes")
 
         // Step 1: Extract plugin ID from the zip
         val pluginId = try {
             extractPluginId(zipBytes)
         } catch (e: Exception) {
-            LOG.error("Failed to extract plugin ID from zip", e)
+            log.error("Failed to extract plugin ID from zip", e)
             return ReloadResult(false, "Failed to extract plugin ID: ${e.message}")
         }
 
@@ -56,7 +54,7 @@ class PluginHotReloadService {
             return ReloadResult(false, "Could not find plugin.xml in the zip file")
         }
 
-        LOG.info("Extracted plugin ID: $pluginId")
+        log.info("Extracted plugin ID: $pluginId")
 
         // Step 2: Save zip to temp file
         val tempZipFile = try {
@@ -64,7 +62,7 @@ class PluginHotReloadService {
             Files.write(tempFile, zipBytes)
             tempFile
         } catch (e: Exception) {
-            LOG.error("Failed to save zip to temp file", e)
+            log.error("Failed to save zip to temp file", e)
             return ReloadResult(false, "Failed to save zip: ${e.message}", pluginId)
         }
 
@@ -74,7 +72,7 @@ class PluginHotReloadService {
             try {
                 Files.deleteIfExists(tempZipFile)
             } catch (e: Exception) {
-                LOG.warn("Failed to delete temp file: $tempZipFile", e)
+                log.warn("Failed to delete temp file: $tempZipFile", e)
             }
         }
     }
@@ -89,7 +87,7 @@ class PluginHotReloadService {
         val existingPlugin = PluginManagerCore.getPlugin(pluginId)
         val existingPluginPath = existingPlugin?.pluginPath
 
-        LOG.info("Existing plugin: ${existingPlugin?.name ?: "not found"}, path: $existingPluginPath")
+        log.info("Existing plugin: ${existingPlugin?.name ?: "not found"}, path: $existingPluginPath")
 
         // Step 4: Check if dynamic reload is possible
         // Using internal API: DynamicPlugins - no public alternative exists
@@ -97,7 +95,7 @@ class PluginHotReloadService {
             val descriptor = existingPlugin as? IdeaPluginDescriptorImpl
             @Suppress("UnstableApiUsage")
             if (descriptor != null && !DynamicPlugins.allowLoadUnloadWithoutRestart(descriptor)) {
-                LOG.warn("Plugin $pluginId does not support dynamic reload")
+                log.warn("Plugin $pluginId does not support dynamic reload")
                 // Still try to do it, but note that restart may be required
             }
         }
@@ -106,19 +104,19 @@ class PluginHotReloadService {
         // Using internal API: PluginInstaller.unloadDynamicPlugin - no public alternative exists
         if (existingPlugin != null && !PluginManagerCore.isDisabled(pluginId)) {
             val descriptor = existingPlugin as? IdeaPluginDescriptorImpl
-            if (descriptor != null) {
-                LOG.info("Unloading existing plugin: ${existingPlugin.name}")
+            if (descriptor !== null) {
+                log.info("Unloading existing plugin: ${existingPlugin.name}")
                 @Suppress("UnstableApiUsage")
                 val unloaded = PluginInstaller.unloadDynamicPlugin(null, descriptor, true)
                 if (!unloaded) {
-                    LOG.warn("Failed to unload plugin dynamically, restart may be required")
+                    log.warn("Failed to unload plugin dynamically, restart may be required")
                 }
             }
         }
 
         // Step 6: Delete old plugin folder (rename first for safety)
         if (existingPluginPath != null && Files.exists(existingPluginPath)) {
-            LOG.info("Removing old plugin at: $existingPluginPath")
+            log.info("Removing old plugin at: $existingPluginPath")
             try {
                 val backupPath = existingPluginPath.resolveSibling("${existingPluginPath.fileName}.old.${System.currentTimeMillis()}")
                 Files.move(existingPluginPath, backupPath)
@@ -126,11 +124,11 @@ class PluginHotReloadService {
                 try {
                     NioFiles.deleteRecursively(backupPath)
                 } catch (e: Exception) {
-                    LOG.warn("Could not delete old plugin folder immediately: $backupPath", e)
+                    log.warn("Could not delete old plugin folder immediately: $backupPath", e)
                     // Will be cleaned up on restart
                 }
             } catch (e: Exception) {
-                LOG.error("Failed to remove old plugin folder", e)
+                log.error("Failed to remove old plugin folder", e)
                 return ReloadResult(false, "Failed to remove old plugin: ${e.message}", pluginIdString)
             }
         }
@@ -141,18 +139,18 @@ class PluginHotReloadService {
         val newDescriptor = try {
             loadDescriptorFromArtifact(zipFile, null)
         } catch (e: Exception) {
-            LOG.error("Failed to load descriptor from zip", e)
+            log.error("Failed to load descriptor from zip", e)
             return ReloadResult(false, "Failed to load plugin descriptor: ${e.message}", pluginIdString)
         }
 
-        if (newDescriptor == null) {
+        if (newDescriptor === null) {
             return ReloadResult(false, "Failed to load plugin descriptor from zip file", pluginIdString)
         }
 
         val pluginName = newDescriptor.name
         val pluginVersion = newDescriptor.version
 
-        LOG.info("Installing and loading plugin: $pluginName ($pluginVersion)")
+        log.info("Installing and loading plugin: $pluginName ($pluginVersion)")
 
         // Step 8: Install and load the plugin dynamically
         // Using internal API: PluginInstaller.installAndLoadDynamicPlugin - no public alternative exists
@@ -160,15 +158,15 @@ class PluginHotReloadService {
         val loaded = try {
             PluginInstaller.installAndLoadDynamicPlugin(zipFile, null, newDescriptor as IdeaPluginDescriptorImpl)
         } catch (e: Exception) {
-            LOG.error("Failed to install and load plugin", e)
+            log.error("Failed to install and load plugin", e)
             return ReloadResult(false, "Failed to load plugin: ${e.message}", pluginIdString, restartRequired = true)
         }
 
         return if (loaded) {
-            LOG.info("Plugin hot reload successful: $pluginName")
+            log.info("Plugin hot reload successful: $pluginName")
             ReloadResult(true, "Plugin $pluginName reloaded successfully", pluginIdString)
         } else {
-            LOG.warn("Dynamic plugin load failed, restart required")
+            log.warn("Dynamic plugin load failed, restart required")
             ReloadResult(false, "Plugin installed but restart required", pluginIdString, restartRequired = true)
         }
     }
@@ -209,7 +207,7 @@ class PluginHotReloadService {
                 null
             }
         } catch (e: Exception) {
-            LOG.error("Failed to parse plugin.xml", e)
+            log.error("Failed to parse plugin.xml", e)
             null
         }
     }
