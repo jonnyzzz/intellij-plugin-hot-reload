@@ -14,8 +14,12 @@ import org.jetbrains.io.send
  * HTTP REST endpoint handler for plugin hot reload functionality.
  * Endpoint: /api/plugin-hot-reload
  *
- * GET: Returns usage instructions
- * POST: Accepts plugin zip file and performs hot reload
+ * GET: Returns usage instructions (no authentication required)
+ * POST: Accepts plugin zip file and performs hot reload (requires Bearer token)
+ *
+ * Authentication:
+ * POST requests require an Authorization header with a Bearer token that matches
+ * the token in the marker file. The token is generated when the IDE starts.
  */
 class HotReloadHttpHandler : HttpRequestHandler() {
     companion object {
@@ -51,9 +55,10 @@ class HotReloadHttpHandler : HttpRequestHandler() {
               "pid": $pid,
               "usage": {
                 "GET": "Returns this information",
-                "POST": "Upload a plugin .zip file to hot-reload it"
+                "POST": "Upload a plugin .zip file to hot-reload it (requires Authorization header)"
               },
-              "example": "curl -X POST -F 'file=@plugin.zip' http://localhost:<port>/api/plugin-hot-reload"
+              "authentication": "POST requires 'Authorization: Bearer <token>' header. Token is in the marker file.",
+              "example": "curl -X POST -H 'Authorization: Bearer <token>' --data-binary @plugin.zip http://localhost:<port>/api/plugin-hot-reload"
             }
         """.trimIndent()
 
@@ -62,6 +67,20 @@ class HotReloadHttpHandler : HttpRequestHandler() {
     }
 
     private fun handlePost(request: FullHttpRequest, context: ChannelHandlerContext): Boolean {
+        // Validate authentication
+        val authHeader = request.headers().get(HttpHeaderNames.AUTHORIZATION)
+        val markerService = service<HotReloadMarkerService>()
+        val expectedToken = "Bearer ${markerService.authToken}"
+
+        if (authHeader != expectedToken) {
+            LOG.warn("Unauthorized hot-reload attempt. Expected token hash: ${markerService.authToken.hashCode()}, got: ${authHeader?.hashCode()}")
+            sendJsonResponse(
+                context, request, HttpResponseStatus.UNAUTHORIZED,
+                """{"error": "Unauthorized. Provide valid 'Authorization: Bearer <token>' header."}"""
+            )
+            return true
+        }
+
         val content = request.content()
         if (!content.isReadable || content.readableBytes() == 0) {
             sendJsonResponse(
@@ -80,8 +99,8 @@ class HotReloadHttpHandler : HttpRequestHandler() {
         // Process the plugin reload on EDT
         ApplicationManager.getApplication().invokeLater {
             try {
-                val service = service<PluginHotReloadService>()
-                val result = service.reloadPlugin(bytes)
+                val reloadService = service<PluginHotReloadService>()
+                val result = reloadService.reloadPlugin(bytes)
 
                 // Note: Response already sent, this is for logging
                 if (result.success) {
