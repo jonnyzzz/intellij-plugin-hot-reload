@@ -67,7 +67,7 @@ class PluginHotReloadService {
             extractPluginId(zipBytes)
         } catch (e: Exception) {
             val errorMsg = "Failed to extract plugin ID: ${e.message}"
-            log.error("Failed to extract plugin ID from zip", e)
+            log.warn("Failed to extract plugin ID from zip", e)
             progress.reportError(errorMsg)
             return ReloadResult(false, errorMsg)
         }
@@ -89,7 +89,7 @@ class PluginHotReloadService {
             tempFile
         } catch (e: Exception) {
             val errorMsg = "Failed to save zip: ${e.message}"
-            log.error("Failed to save zip to temp file", e)
+            log.warn("Failed to save zip to temp file", e)
             progress.reportError(errorMsg)
             return ReloadResult(false, errorMsg, pluginId)
         }
@@ -174,7 +174,7 @@ class PluginHotReloadService {
                 }
             } catch (e: Exception) {
                 val errorMsg = "Failed to remove old plugin: ${e.message}"
-                log.error("Failed to remove old plugin folder", e)
+                log.warn("Failed to remove old plugin folder", e)
                 progress.reportError(errorMsg)
                 return ReloadResult(false, errorMsg, pluginIdString)
             }
@@ -188,7 +188,7 @@ class PluginHotReloadService {
             loadDescriptorFromArtifact(zipFile, null)
         } catch (e: Exception) {
             val errorMsg = "Failed to load plugin descriptor: ${e.message}"
-            log.error("Failed to load descriptor from zip", e)
+            log.warn("Failed to load descriptor from zip", e)
             progress.reportError(errorMsg)
             return ReloadResult(false, errorMsg, pluginIdString)
         }
@@ -213,7 +213,7 @@ class PluginHotReloadService {
             PluginInstaller.installAndLoadDynamicPlugin(zipFile, null, newDescriptor as IdeaPluginDescriptorImpl)
         } catch (e: Exception) {
             val errorMsg = "Failed to load plugin: ${e.message}"
-            log.error("Failed to install and load plugin", e)
+            log.warn("Failed to install and load plugin", e)
             progress.reportError(errorMsg)
             return ReloadResult(false, errorMsg, pluginIdString, pluginName, restartRequired = true)
         }
@@ -267,7 +267,7 @@ class PluginHotReloadService {
                 null
             }
         } catch (e: Exception) {
-            log.error("Failed to parse plugin.xml", e)
+            log.warn("Failed to parse plugin.xml", e)
             null
         }
     }

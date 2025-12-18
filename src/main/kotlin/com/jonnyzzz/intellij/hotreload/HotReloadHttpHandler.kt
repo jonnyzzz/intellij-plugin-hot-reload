@@ -81,11 +81,9 @@ class HotReloadHttpHandler : HttpRequestHandler() {
 
         val progressReporter = object : PluginHotReloadService.ProgressReporter {
             override fun report(message: String) {
-                log.info(message)
                 writeLine(message)
             }
             override fun reportError(message: String) {
-                log.warn(message)
                 writeLine("ERROR: $message")
             }
         }
@@ -106,7 +104,7 @@ class HotReloadHttpHandler : HttpRequestHandler() {
                     notifications.showError(r.pluginId, r.pluginName, r.message)
                 }
             } catch (e: Exception) {
-                log.error("Hot reload failed", e)
+                log.warn("Hot reload failed", e)
                 progressReporter.reportError(e.message ?: "Unknown error")
                 notifications.showError(null, null, e.message ?: "Unknown error")
                 result = PluginHotReloadService.ReloadResult(false, e.message ?: "Unknown error")

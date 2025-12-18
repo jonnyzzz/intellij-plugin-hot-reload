@@ -42,9 +42,9 @@ tasks.test { useJUnit() }
 val deployPlugin by tasks.registering {
     group = "intellij platform"
     description = "Deploy plugin to running IDEs"
-    dependsOn(tasks.named("buildPlugin"))
+    dependsOn(tasks.buildPlugin)
     doLast {
-        val zip = tasks.named("buildPlugin").get().outputs.files.singleFile
+        val zip = tasks.buildPlugin.get().outputs.files.singleFile
         val home = File(System.getProperty("user.home"))
         val endpoints = home.listFiles { f -> f.name.matches(Regex("\\.\\d+\\.hot-reload")) }
             ?.mapNotNull { f ->
