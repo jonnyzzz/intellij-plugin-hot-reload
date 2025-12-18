@@ -98,15 +98,16 @@ class HotReloadHttpHandler : HttpRequestHandler() {
                 result = reloadService.reloadPlugin(bytes, progressReporter)
 
                 val r = result!!
+                val pluginInfo = r.toPluginInfo()
                 if (r.success) {
-                    notifications.showSuccess(r.pluginId ?: "unknown", r.pluginName ?: "Unknown")
+                    notifications.showSuccess(pluginInfo)
                 } else {
-                    notifications.showError(r.pluginId, r.pluginName, r.message)
+                    notifications.showError(pluginInfo, r.message)
                 }
             } catch (e: Exception) {
                 log.warn("Hot reload failed", e)
                 progressReporter.reportError(e.message ?: "Unknown error")
-                notifications.showError(null, null, e.message ?: "Unknown error")
+                notifications.showError(PluginInfo.Unknown, e.message ?: "Unknown error")
                 result = PluginHotReloadService.ReloadResult(false, e.message ?: "Unknown error")
             } finally {
                 latch.countDown()

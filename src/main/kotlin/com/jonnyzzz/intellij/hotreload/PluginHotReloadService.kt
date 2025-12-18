@@ -5,9 +5,12 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.util.io.NioFiles
+import com.intellij.util.MemoryDumpHelper
 import java.io.ByteArrayInputStream
 import java.nio.file.Files
 import java.nio.file.Path
+import java.text.SimpleDateFormat
+import java.util.*
 import java.util.zip.ZipInputStream
 import javax.xml.parsers.DocumentBuilderFactory
 
@@ -16,10 +19,11 @@ import javax.xml.parsers.DocumentBuilderFactory
  *
  * The reload process:
  * 1. Parse plugin.xml from the uploaded zip to get plugin ID
- * 2. Find and unload the existing plugin with that ID
- * 3. Remove the old plugin folder
- * 4. Extract the new plugin to the plugins folder
- * 5. Load the new plugin dynamically
+ * 2. Check if plugin can be safely unloaded
+ * 3. Find and unload the existing plugin with that ID
+ * 4. Remove the old plugin folder
+ * 5. Extract the new plugin to the plugins folder
+ * 6. Load the new plugin dynamically
  *
  * Note: This service uses IntelliJ Platform internal APIs for plugin management
  * (DynamicPlugins, PluginInstaller, loadDescriptorFromArtifact) as there are no
@@ -50,19 +54,19 @@ class PluginHotReloadService {
         val message: String,
         val pluginId: String? = null,
         val pluginName: String? = null,
-        val restartRequired: Boolean = false
+        val restartRequired: Boolean = false,
+        val memoryDumpPath: String? = null,
+        val unloadBlockedReason: String? = null
     )
 
     /**
      * Reload a plugin from the provided zip file bytes.
      */
     fun reloadPlugin(zipBytes: ByteArray, progress: ProgressReporter = NoOpProgressReporter): ReloadResult {
-        val msg = "Starting plugin hot reload, zip size: ${zipBytes.size} bytes"
-        log.info(msg)
-        progress.report(msg)
+        progress.report(HotReloadBundle.message("progress.starting", zipBytes.size))
 
         // Step 1: Extract plugin ID from the zip
-        progress.report("Extracting plugin ID from zip...")
+        progress.report(HotReloadBundle.message("progress.extracting.id"))
         val pluginId = try {
             extractPluginId(zipBytes)
         } catch (e: Exception) {
@@ -73,16 +77,15 @@ class PluginHotReloadService {
         }
 
         if (pluginId == null) {
-            val errorMsg = "Could not find plugin.xml in the zip file"
+            val errorMsg = HotReloadBundle.message("error.no.plugin.id")
             progress.reportError(errorMsg)
             return ReloadResult(false, errorMsg)
         }
 
-        progress.report("Plugin ID: $pluginId")
+        progress.report(HotReloadBundle.message("progress.plugin.id", pluginId))
         log.info("Extracted plugin ID: $pluginId")
 
         // Step 2: Save zip to temp file
-        progress.report("Saving zip to temp file...")
         val tempZipFile = try {
             val tempFile = Files.createTempFile("plugin-hot-reload-", ".zip")
             Files.write(tempFile, zipBytes)
@@ -116,118 +119,142 @@ class PluginHotReloadService {
         val pluginId = PluginId.getId(pluginIdString)
 
         // Step 3: Find existing plugin
-        progress.report("Looking for existing plugin...")
+        progress.report(HotReloadBundle.message("progress.looking.for.existing"))
         val existingPlugin = PluginManagerCore.getPlugin(pluginId)
         val existingPluginPath = existingPlugin?.pluginPath
 
-        val existingMsg = "Existing plugin: ${existingPlugin?.name ?: "not found"}, path: $existingPluginPath"
-        log.info(existingMsg)
-        progress.report(existingMsg)
+        if (existingPlugin != null) {
+            progress.report(HotReloadBundle.message("progress.existing.plugin", existingPlugin.name, existingPluginPath.toString()))
+        }
 
-        // Step 4: Check if dynamic reload is possible
-        // Using internal API: DynamicPlugins - no public alternative exists
+        // Step 4: Check if dynamic reload is possible and get reason if not
+        var unloadBlockedReason: String? = null
         if (existingPlugin != null) {
             val descriptor = existingPlugin as? IdeaPluginDescriptorImpl
-            @Suppress("UnstableApiUsage")
-            if (descriptor != null && !DynamicPlugins.allowLoadUnloadWithoutRestart(descriptor)) {
-                val warnMsg = "Plugin $pluginId does not support dynamic reload, will try anyway"
-                log.warn(warnMsg)
-                progress.report(warnMsg)
+            if (descriptor != null) {
+                @Suppress("UnstableApiUsage")
+                unloadBlockedReason = DynamicPlugins.checkCanUnloadWithoutRestart(descriptor)
+                if (unloadBlockedReason != null) {
+                    val warnMsg = "Plugin cannot be unloaded without restart: $unloadBlockedReason"
+                    log.warn(warnMsg)
+                    progress.report(warnMsg)
+                }
             }
         }
 
         // Step 5: Unload existing plugin if it exists and is enabled
-        // Using internal API: PluginInstaller.unloadDynamicPlugin - no public alternative exists
+        var memoryDumpPath: String? = null
         if (existingPlugin != null && !PluginManagerCore.isDisabled(pluginId)) {
             val descriptor = existingPlugin as? IdeaPluginDescriptorImpl
-            if (descriptor !== null) {
-                val unloadMsg = "Unloading existing plugin: ${existingPlugin.name}"
-                log.info(unloadMsg)
-                progress.report(unloadMsg)
+            if (descriptor != null) {
+                progress.report(HotReloadBundle.message("progress.unloading", existingPlugin.name))
 
                 @Suppress("UnstableApiUsage")
-                val unloaded = PluginInstaller.unloadDynamicPlugin(null, descriptor, true)
+                val options = DynamicPlugins.UnloadPluginOptions(requireMemorySnapshot = unloadBlockedReason != null)
+
+                @Suppress("UnstableApiUsage")
+                val unloaded = DynamicPlugins.unloadPlugin(descriptor, options)
+
                 if (!unloaded) {
-                    val warnMsg = "Failed to unload plugin dynamically, restart may be required"
+                    val warnMsg = HotReloadBundle.message("error.unload.failed")
                     log.warn(warnMsg)
                     progress.report(warnMsg)
+
+                    // Create memory dump if unload failed
+                    if (MemoryDumpHelper.memoryDumpAvailable()) {
+                        memoryDumpPath = createMemoryDump(pluginIdString, progress)
+                    }
                 } else {
-                    progress.report("Plugin unloaded successfully")
+                    progress.report(HotReloadBundle.message("progress.unloaded"))
                 }
             }
         }
 
         // Step 6: Delete old plugin folder (rename first for safety)
         if (existingPluginPath != null && Files.exists(existingPluginPath)) {
-            progress.report("Removing old plugin at: $existingPluginPath")
-            log.info("Removing old plugin at: $existingPluginPath")
+            progress.report(HotReloadBundle.message("progress.removing.old", existingPluginPath))
             try {
                 val backupPath = existingPluginPath.resolveSibling("${existingPluginPath.fileName}.old.${System.currentTimeMillis()}")
                 Files.move(existingPluginPath, backupPath)
-                // Try to delete the backup
                 try {
                     NioFiles.deleteRecursively(backupPath)
-                    progress.report("Old plugin folder removed")
+                    progress.report(HotReloadBundle.message("progress.removed.old"))
                 } catch (e: Exception) {
                     log.warn("Could not delete old plugin folder immediately: $backupPath", e)
-                    progress.report("Old plugin folder will be cleaned up on restart")
                 }
             } catch (e: Exception) {
                 val errorMsg = "Failed to remove old plugin: ${e.message}"
                 log.warn("Failed to remove old plugin folder", e)
                 progress.reportError(errorMsg)
-                return ReloadResult(false, errorMsg, pluginIdString)
+                return ReloadResult(false, errorMsg, pluginIdString, memoryDumpPath = memoryDumpPath, unloadBlockedReason = unloadBlockedReason)
             }
         }
 
         // Step 7: Load descriptor from the zip file
-        // Using internal API: loadDescriptorFromArtifact - no public alternative exists
-        progress.report("Loading plugin descriptor from zip...")
+        progress.report(HotReloadBundle.message("progress.loading.descriptor"))
         @Suppress("UnstableApiUsage")
         val newDescriptor = try {
             loadDescriptorFromArtifact(zipFile, null)
         } catch (e: Exception) {
-            val errorMsg = "Failed to load plugin descriptor: ${e.message}"
+            val errorMsg = HotReloadBundle.message("error.descriptor.load.failed")
             log.warn("Failed to load descriptor from zip", e)
             progress.reportError(errorMsg)
-            return ReloadResult(false, errorMsg, pluginIdString)
+            return ReloadResult(false, errorMsg, pluginIdString, memoryDumpPath = memoryDumpPath, unloadBlockedReason = unloadBlockedReason)
         }
 
-        if (newDescriptor === null) {
-            val errorMsg = "Failed to load plugin descriptor from zip file"
+        if (newDescriptor == null) {
+            val errorMsg = HotReloadBundle.message("error.descriptor.load.failed")
             progress.reportError(errorMsg)
-            return ReloadResult(false, errorMsg, pluginIdString)
+            return ReloadResult(false, errorMsg, pluginIdString, memoryDumpPath = memoryDumpPath, unloadBlockedReason = unloadBlockedReason)
         }
 
         val pluginName = newDescriptor.name
         val pluginVersion = newDescriptor.version
 
-        val installMsg = "Installing and loading plugin: $pluginName ($pluginVersion)"
-        log.info(installMsg)
-        progress.report(installMsg)
+        progress.report(HotReloadBundle.message("progress.installing", pluginName, pluginVersion ?: "unknown"))
 
         // Step 8: Install and load the plugin dynamically
-        // Using internal API: PluginInstaller.installAndLoadDynamicPlugin - no public alternative exists
         @Suppress("UnstableApiUsage")
         val loaded = try {
             PluginInstaller.installAndLoadDynamicPlugin(zipFile, null, newDescriptor as IdeaPluginDescriptorImpl)
         } catch (e: Exception) {
-            val errorMsg = "Failed to load plugin: ${e.message}"
+            val errorMsg = HotReloadBundle.message("error.install.failed")
             log.warn("Failed to install and load plugin", e)
             progress.reportError(errorMsg)
-            return ReloadResult(false, errorMsg, pluginIdString, pluginName, restartRequired = true)
+            return ReloadResult(false, errorMsg, pluginIdString, pluginName, restartRequired = true, memoryDumpPath = memoryDumpPath, unloadBlockedReason = unloadBlockedReason)
         }
 
         return if (loaded) {
-            val successMsg = "Plugin $pluginName reloaded successfully"
-            log.info("Plugin hot reload successful: $pluginName")
-            progress.report(successMsg)
-            ReloadResult(true, successMsg, pluginIdString, pluginName)
+            progress.report(HotReloadBundle.message("progress.reloaded", pluginName))
+            ReloadResult(true, "Plugin reloaded successfully", pluginIdString, pluginName, memoryDumpPath = memoryDumpPath, unloadBlockedReason = unloadBlockedReason)
         } else {
             val failMsg = "Plugin installed but restart required"
-            log.warn("Dynamic plugin load failed, restart required")
             progress.reportError(failMsg)
-            ReloadResult(false, failMsg, pluginIdString, pluginName, restartRequired = true)
+            ReloadResult(false, failMsg, pluginIdString, pluginName, restartRequired = true, memoryDumpPath = memoryDumpPath, unloadBlockedReason = unloadBlockedReason)
+        }
+    }
+
+    /**
+     * Create a memory dump for debugging plugin unload issues.
+     * Returns the path to the dump file.
+     */
+    private fun createMemoryDump(pluginId: String, progress: ProgressReporter): String? {
+        return try {
+            val snapshotDate = SimpleDateFormat("dd.MM.yyyy_HH.mm.ss").format(Date())
+            val snapshotFileName = "unload-$pluginId-$snapshotDate.hprof"
+            val snapshotDir = System.getProperty("memory.snapshots.path", System.getProperty("user.home"))
+            val snapshotPath = "$snapshotDir/$snapshotFileName"
+
+            progress.report("Creating memory dump at: $snapshotPath")
+            MemoryDumpHelper.captureMemoryDump(snapshotPath)
+            progress.report("Memory dump created: $snapshotFileName")
+            log.info("Memory dump created at: $snapshotPath")
+
+            snapshotPath
+        } catch (e: Exception) {
+            log.warn("Failed to create memory dump", e)
+            progress.report("Failed to create memory dump: ${e.message}")
+            null
         }
     }
 
@@ -238,7 +265,6 @@ class PluginHotReloadService {
         ZipInputStream(ByteArrayInputStream(zipBytes)).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
-                // Look for plugin.xml in the standard locations
                 val name = entry.name
                 if (name.endsWith("/META-INF/plugin.xml") || name == "META-INF/plugin.xml") {
                     val xmlBytes = zis.readBytes()
