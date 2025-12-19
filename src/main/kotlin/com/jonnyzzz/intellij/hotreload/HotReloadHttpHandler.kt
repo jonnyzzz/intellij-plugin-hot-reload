@@ -4,6 +4,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.util.concurrency.AppExecutorUtil
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelFutureListener
 import io.netty.channel.ChannelHandlerContext
@@ -126,7 +127,12 @@ class HotReloadHttpHandler : HttpRequestHandler() {
                 notifications.showError(PluginInfo.Unknown, e.message ?: "Unknown error")
                 result = PluginHotReloadService.ReloadResult(false, e.message ?: "Unknown error")
             } finally {
-                latch.countDown()
+                //a dirty hack to make sure all background invocables are completed
+                AppExecutorUtil.getAppScheduledExecutorService().schedule(Runnable {
+                    ApplicationManager.getApplication().invokeLater(Runnable {
+                        latch.countDown()
+                    }, ModalityState.nonModal())
+                }, 5, TimeUnit.SECONDS)
             }
         }, ModalityState.nonModal())
 
