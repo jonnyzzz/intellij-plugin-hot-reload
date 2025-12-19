@@ -13,6 +13,7 @@ import org.jetbrains.ide.HttpRequestHandler
 import org.jetbrains.io.addCommonHeaders
 import org.jetbrains.io.send
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.TimeUnit
 
 /**
@@ -75,24 +76,15 @@ class HotReloadHttpHandler : HttpRequestHandler() {
         val channel = context.channel()
         val response = DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK)
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain; charset=utf-8")
+        HttpUtil.setTransferEncodingChunked(response, true)
         response.addCommonHeaders()
-        channel.write(response)
+        channel.writeAndFlush(response)
 
         fun writeLine(line: String) {
             log.info("Hot reload progress: $line")
-
-            try {
-                // Execute write on the channel's event loop for thread safety
-                channel.writeAndFlush(
-                    DefaultHttpContent(
-                        Unpooled.copiedBuffer(
-                            "$line\n",
-                            Charsets.UTF_8
-                        )
-                    )
-                )
-            } catch (e: Exception) {
-                log.info("Hot reload error write failed: ${e.message}", e)
+            if (!channel.isActive) return
+            channel.eventLoop().execute {
+                channel.writeAndFlush(DefaultHttpContent(Unpooled.copiedBuffer("$line\n", Charsets.UTF_8)))
             }
         }
 
@@ -112,9 +104,9 @@ class HotReloadHttpHandler : HttpRequestHandler() {
         ApplicationManager.getApplication().invokeLater({
             try {
                 val reloadService = service<PluginHotReloadService>()
-                result = reloadService.reloadPlugin(bytes, progressReporter)
+                val r = reloadService.reloadPlugin(bytes, progressReporter)
+                result = r
 
-                val r = result!!
                 val pluginInfo = r.toPluginInfo()
                 if (r.success) {
                     notifications.showSuccess(pluginInfo)
