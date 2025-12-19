@@ -82,10 +82,7 @@ class HotReloadHttpHandler : HttpRequestHandler() {
 
         fun writeLine(line: String) {
             log.info("Hot reload progress: $line")
-            if (!channel.isActive) return
-            channel.eventLoop().execute {
-                channel.writeAndFlush(DefaultHttpContent(Unpooled.copiedBuffer("$line\n", Charsets.UTF_8)))
-            }
+            channel.writeAndFlush(DefaultHttpContent(Unpooled.copiedBuffer("$line\n", Charsets.UTF_8)))
         }
 
         val progressReporter = object : PluginHotReloadService.ProgressReporter {

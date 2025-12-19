@@ -77,6 +77,8 @@ val deployPlugin by tasks.registering {
     description = "Deploy plugin to running IDEs"
     dependsOn(tasks.buildPlugin)
     doLast {
+        logging.captureStandardOutput(LogLevel.WARN)
+
         val zip = tasks.buildPlugin.get().outputs.files.singleFile
         val home = File(System.getProperty("user.home"))
         val endpoints = home.listFiles { f -> f.name.matches(Regex("\\.\\d+\\.hot-reload")) }
@@ -92,14 +94,17 @@ val deployPlugin by tasks.registering {
         endpoints.forEach { (url, token) ->
             println("\n→ $url")
             val conn = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"; doOutput = true
+                requestMethod = "POST"; doOutput = true; doInput = true
                 setRequestProperty("Authorization", token)
                 setRequestProperty("Content-Type", "application/octet-stream")
                 connectTimeout = 5000; readTimeout = 300000
             }
             conn.outputStream.use { out -> zip.inputStream().use { it.copyTo(out) } }
             if (conn.responseCode in 200..299) {
-                conn.inputStream.bufferedReader().forEachLine { println("  $it") }
+                conn.inputStream.buffered().readAllBytes()
+                    .toString(Charsets.UTF_8)
+                    .lines()
+                    .forEach { println("  $it") }
             } else {
                 println("  ✗ HTTP ${conn.responseCode}")
             }
