@@ -27,6 +27,12 @@ An IntelliJ IDEA plugin that provides an HTTP REST endpoint for dynamically relo
 - IntelliJ IDEA 2025.3 or later (build 253+)
 - Java 21+
 
+## Internal API Usage 
+
+The plugin is heavy on internal API usage. It may break in the next releases of IntelliJ.
+See and join the discussion https://youtrack.jetbrains.com/issue/IJPL-224753/Provide-API-to-dynamically-reload-a-plugin
+
+
 ## Installation
 
 1. Download the plugin zip from [Releases](https://github.com/jonnyzzz/intellij-plugin-hot-reload/releases)
