@@ -12,8 +12,8 @@ import io.netty.handler.codec.http.*
 import org.jetbrains.ide.HttpRequestHandler
 import org.jetbrains.io.addCommonHeaders
 import org.jetbrains.io.send
+import java.io.StringWriter
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.TimeUnit
 
 /**
@@ -80,9 +80,11 @@ class HotReloadHttpHandler : HttpRequestHandler() {
         response.addCommonHeaders()
         channel.writeAndFlush(response)
 
+        val resultWriter = StringWriter()
+
         fun writeLine(line: String) {
             log.info("Hot reload progress: $line")
-            channel.writeAndFlush(DefaultHttpContent(Unpooled.copiedBuffer("$line\n", Charsets.UTF_8)))
+            resultWriter.write(line + "\n")
         }
 
         val progressReporter = object : PluginHotReloadService.ProgressReporter {
@@ -135,6 +137,7 @@ class HotReloadHttpHandler : HttpRequestHandler() {
             else -> writeLine("FAILED")
         }
 
+        channel.write(DefaultHttpContent(Unpooled.copiedBuffer(resultWriter.toString(), Charsets.UTF_8)))
         channel.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT)
             .addListener(ChannelFutureListener.CLOSE)
         return true
