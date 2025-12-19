@@ -20,6 +20,10 @@ IntelliJ Plugin Hot Reload - a plugin that provides an HTTP REST endpoint for dy
 
 **Key limitation**: This plugin cannot reload itself. Attempting to do so will be rejected with a clear error message.
 
+## Key Documentation
+
+- [AGENT-STEROID.md](AGENT-STEROID.md) - **IntelliJ API usage guide for LLM agents** - read this to become a power user
+
 ## Build Commands
 
 ```bash
