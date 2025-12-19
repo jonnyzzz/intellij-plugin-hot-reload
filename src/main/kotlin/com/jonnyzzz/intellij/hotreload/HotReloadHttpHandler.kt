@@ -74,19 +74,24 @@ class HotReloadHttpHandler : HttpRequestHandler() {
         val channel = context.channel()
         val response = DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK)
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain; charset=utf-8")
-        response.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED)
         response.addCommonHeaders()
         channel.write(response)
 
         fun writeLine(line: String) {
             log.info("Hot reload progress: $line")
-            // Execute write on the channel's event loop for thread safety
-            if (channel.eventLoop().inEventLoop()) {
-                channel.writeAndFlush(DefaultHttpContent(Unpooled.copiedBuffer("$line\n", Charsets.UTF_8)))
-            } else {
-                channel.eventLoop().execute {
-                    channel.writeAndFlush(DefaultHttpContent(Unpooled.copiedBuffer("$line\n", Charsets.UTF_8)))
-                }
+
+            try {
+                // Execute write on the channel's event loop for thread safety
+                channel.writeAndFlush(
+                    DefaultHttpContent(
+                        Unpooled.copiedBuffer(
+                            "$line\n",
+                            Charsets.UTF_8
+                        )
+                    )
+                )
+            } catch (e: Exception) {
+                log.info("Hot reload error write failed: ${e.message}", e)
             }
         }
 
