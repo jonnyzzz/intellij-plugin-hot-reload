@@ -32,9 +32,6 @@ Parameters:
 ### `steroid_execute_feedback`
 Provide feedback on execution results. Use after `steroid_execute_code` to rate success.
 
-### `steroid_plugin_info` / `steroid_plugin_reload`
-Check plugin status and trigger hot reload after deploying plugin updates.
-
 ## Critical Rules
 
 ### 1. The `execute { }` Block is a SUSPEND Function
