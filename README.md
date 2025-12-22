@@ -40,6 +40,8 @@ This plugin relies heavily on IntelliJ Platform internal APIs (`@ApiStatus.Inter
 
 **This plugin may break in future IntelliJ releases.** See and join the discussion: https://youtrack.jetbrains.com/issue/IJPL-224753/Provide-API-to-dynamically-reload-a-plugin
 
+Also related bug with workaround
+https://youtrack.jetbrains.com/issue/IJPL-225253/IdeScriptEngineManagerImpl.AllPluginsLoader-leak-classloader
 
 ## Installation
 
