@@ -154,21 +154,17 @@ class PluginHotReloadService {
         // Step 6: Unload existing plugin if it exists and is enabled
         var memoryDumpPath: String? = null
         if (existingPlugin != null && !PluginManagerCore.isDisabled(pluginId)) {
-            val descriptor = existingPlugin as? IdeaPluginDescriptorImpl
+            val descriptor = existingPlugin as? PluginMainDescriptor
             if (descriptor !== null) {
                 progress.report(HotReloadBundle.message("progress.unloading", existingPlugin.name))
 
                 @Suppress("UnstableApiUsage")
                 val options = DynamicPlugins.UnloadPluginOptions(requireMemorySnapshot = unloadBlockedReason != null)
 
-                // Mark plugin as not loading - this is done by unloadPlugins (plural) but not
-                // by unloadPlugin (singular). Without this, the plugin remains in enabledPlugins
-                // with isMarkedForLoading=true, causing assertion in PluginSet.withPlugin when
-                // loading the new version.
-                descriptor.isMarkedForLoading = false
-
+                // Use unloadPlugins (plural) instead of unloadPlugin (singular) because
+                // the plural version properly sets isMarkedForLoading=false on the descriptor
                 @Suppress("UnstableApiUsage")
-                val unloaded = DynamicPlugins.unloadPlugin(descriptor, options)
+                val unloaded = DynamicPlugins.unloadPlugins(listOf(descriptor), options = options)
 
                 if (!unloaded) {
                     val warnMsg = HotReloadBundle.message("error.unload.failed")
