@@ -161,6 +161,12 @@ class PluginHotReloadService {
                 @Suppress("UnstableApiUsage")
                 val options = DynamicPlugins.UnloadPluginOptions(requireMemorySnapshot = unloadBlockedReason != null)
 
+                // Mark plugin as not loading - this is done by unloadPlugins (plural) but not
+                // by unloadPlugin (singular). Without this, the plugin remains in enabledPlugins
+                // with isMarkedForLoading=true, causing assertion in PluginSet.withPlugin when
+                // loading the new version.
+                descriptor.isMarkedForLoading = false
+
                 @Suppress("UnstableApiUsage")
                 val unloaded = DynamicPlugins.unloadPlugin(descriptor, options)
 
