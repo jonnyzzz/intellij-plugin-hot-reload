@@ -167,12 +167,24 @@ class PluginHotReloadService {
                 if (!unloaded) {
                     val warnMsg = HotReloadBundle.message("error.unload.failed")
                     log.warn(warnMsg)
-                    progress.report(warnMsg)
+                    progress.reportError(warnMsg)
 
                     // Create memory dump if unload failed
                     if (MemoryDumpHelper.memoryDumpAvailable()) {
                         memoryDumpPath = createMemoryDump(pluginIdString, progress)
                     }
+
+                    // Return early - cannot proceed with loading new plugin
+                    // when old plugin is still loaded (would cause assertion in PluginSet.withPlugin)
+                    return ReloadResult(
+                        success = false,
+                        message = warnMsg,
+                        pluginId = pluginIdString,
+                        pluginName = existingPlugin.name,
+                        restartRequired = true,
+                        memoryDumpPath = memoryDumpPath,
+                        unloadBlockedReason = unloadBlockedReason
+                    )
                 } else {
                     progress.report(HotReloadBundle.message("progress.unloaded"))
                 }
