@@ -27,10 +27,18 @@ An IntelliJ IDEA plugin that provides an HTTP REST endpoint for dynamically relo
 - IntelliJ IDEA 2025.3 or later (build 253+)
 - Java 21+
 
-## Internal API Usage 
+## Internal API Usage
 
-The plugin is heavy on internal API usage. It may break in the next releases of IntelliJ.
-See and join the discussion https://youtrack.jetbrains.com/issue/IJPL-224753/Provide-API-to-dynamically-reload-a-plugin
+This plugin relies heavily on IntelliJ Platform internal APIs (`@ApiStatus.Internal`) because there is no public API for dynamic plugin loading/unloading.
+
+**Internal APIs used:**
+- `DynamicPlugins.checkCanUnloadWithoutRestart()` - Check if plugin supports hot reload
+- `DynamicPlugins.unloadPlugins()` - Unload a plugin (must use plural version!)
+- `DynamicPlugins.UnloadPluginOptions` - Unload configuration
+- `loadDescriptorFromArtifact()` - Returns internal `PluginMainDescriptor` type
+- `PluginInstaller.installAndLoadDynamicPlugin()` - Takes internal `IdeaPluginDescriptorImpl` type
+
+**This plugin may break in future IntelliJ releases.** See and join the discussion: https://youtrack.jetbrains.com/issue/IJPL-224753/Provide-API-to-dynamically-reload-a-plugin
 
 
 ## Installation
@@ -258,12 +266,19 @@ src/test/kotlin/com/jonnyzzz/intellij/hotreload/
 
 ### Key APIs Used
 
+**Internal APIs (`@ApiStatus.Internal`):**
 - `DynamicPlugins.checkCanUnloadWithoutRestart()` - Check if plugin supports hot reload
-- `DynamicPlugins.unloadPlugin()` - Unload a plugin
+- `DynamicPlugins.unloadPlugins()` - Unload plugins (**use plural version, not singular!**)
+- `DynamicPlugins.UnloadPluginOptions` - Configuration for unload operation
 - `PluginInstaller.installAndLoadDynamicPlugin()` - Install and load a plugin
 - `loadDescriptorFromArtifact()` - Load plugin descriptor from zip file
+
+**Public APIs:**
+- `PluginManagerCore.getPlugin()` - Find plugin by ID
 - `PluginManager.getPluginByClass()` - Get plugin descriptor for a class (used for self-detection)
 - `NotificationGroupManager` - IDE balloon notifications
+
+**Important**: Use `unloadPlugins()` (plural), not `unloadPlugin()` (singular). The singular version does not set `isMarkedForLoading=false`, causing assertion errors when loading the new version.
 
 ### Key Implementation Details
 

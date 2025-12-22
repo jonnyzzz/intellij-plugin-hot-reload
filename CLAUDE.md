@@ -126,12 +126,27 @@ src/test/kotlin/com/jonnyzzz/intellij/hotreload/
 
 ### Plugin Loading/Unloading
 
+**IMPORTANT**: Most plugin management APIs are `@ApiStatus.Internal`. There is no stable public API for dynamic plugin loading/unloading. See the YouTrack issue: https://youtrack.jetbrains.com/issue/IJPL-224753
+
+| API | Status | Notes |
+|-----|--------|-------|
+| `DynamicPlugins.*` | `@Internal` | Entire object is internal |
+| `DynamicPlugins.checkCanUnloadWithoutRestart()` | `@Internal` | No alternative |
+| `DynamicPlugins.unloadPlugins()` | `@Internal` | **Use plural version**, not singular |
+| `DynamicPlugins.UnloadPluginOptions` | `@Internal` | No alternative |
+| `loadDescriptorFromArtifact()` | Returns `@Internal` type | Returns `PluginMainDescriptor` which is internal |
+| `PluginInstaller.installAndLoadDynamicPlugin()` | Uses `@Internal` param | Takes `IdeaPluginDescriptorImpl` which is internal |
+| `PluginManagerCore.getPlugin()` | **Public** | Safe to use |
+| `PluginManager.getPluginByClass()` | **Public** | Safe to use |
+
 ```kotlin
-// Check if plugin can be dynamically unloaded
+// Check if plugin can be dynamically unloaded (@Internal)
 DynamicPlugins.checkCanUnloadWithoutRestart(descriptor)
 
-// Unload a plugin
-DynamicPlugins.unloadPlugin(descriptor, options)
+// Unload plugins - USE PLURAL VERSION!
+// The singular unloadPlugin() does NOT set isMarkedForLoading=false,
+// which causes assertion errors in PluginSet.withPlugin() when loading new version
+DynamicPlugins.unloadPlugins(listOf(descriptor), options = options)
 
 // Install and load a plugin from zip file
 PluginInstaller.installAndLoadDynamicPlugin(zipFile, parent, descriptor)
@@ -139,12 +154,30 @@ PluginInstaller.installAndLoadDynamicPlugin(zipFile, parent, descriptor)
 // Load plugin descriptor from zip/jar file
 loadDescriptorFromArtifact(file, null)
 
-// Find plugin by ID
+// Find plugin by ID (public API)
 PluginManagerCore.getPlugin(pluginId)
 
-// Get plugin descriptor for a class
+// Get plugin descriptor for a class (public API)
 PluginManager.getPluginByClass(MyClass::class.java)
 ```
+
+### Critical: unloadPlugin vs unloadPlugins
+
+**Always use `DynamicPlugins.unloadPlugins()` (plural), NOT `unloadPlugin()` (singular)!**
+
+The singular version does NOT set `descriptor.isMarkedForLoading = false`, but the plural version does:
+
+```kotlin
+// In DynamicPlugins.kt - unloadPlugins (plural) does this:
+for (descriptor in descriptors) {
+  descriptor.isMarkedForLoading = false  // This is critical!
+  if (!doUnloadPluginWithProgress(...)) { ... }
+}
+
+// But unloadPlugin (singular) skips this step!
+```
+
+If `isMarkedForLoading` remains `true`, then when loading the new plugin version, `PluginSet.withPlugin()` will throw an assertion error: `"PluginMainDescriptor(...) is still loaded"`
 
 ### HTTP Request Handler
 
@@ -174,7 +207,9 @@ channel.write(response)
 3. **Check for self-reload** - reject if plugin ID matches this plugin
 4. **Find existing plugin** by ID using `PluginManagerCore.getPlugin(pluginId)`
 5. **Check if dynamic unload is possible** using `DynamicPlugins.checkCanUnloadWithoutRestart()`
-6. **Unload existing plugin** using `DynamicPlugins.unloadPlugin()`
+6. **Unload existing plugin** using `DynamicPlugins.unloadPlugins()` (**plural version!**)
+   - **CRITICAL**: If unload returns `false`, **return early** - do NOT proceed to loading!
+   - Attempting to load when old plugin is still loaded causes assertion in `PluginSet.withPlugin()`
 7. **Delete old plugin folder** (rename to `.old.<timestamp>` first, then delete)
 8. **Load descriptor** from zip using `loadDescriptorFromArtifact()`
 9. **Install and load** using `PluginInstaller.installAndLoadDynamicPlugin()`
@@ -273,9 +308,40 @@ Check that your plugin zip has the correct structure.
 
 This is expected - the hot-reload plugin cannot reload itself because the reload code would be unloaded mid-execution. Restart the IDE to update the hot-reload plugin.
 
+### "Assertion failed: PluginMainDescriptor(...) is still loaded"
+
+This assertion error occurs in `PluginSet.withPlugin()` when:
+1. The old plugin's `isMarkedForLoading` is still `true` after unload
+2. And you try to load the new version
+
+**Root Cause**: Using `DynamicPlugins.unloadPlugin()` (singular) instead of `unloadPlugins()` (plural).
+
+The singular version does NOT set `descriptor.isMarkedForLoading = false`, but the plural version does. The `PluginSetBuilder` filters `enabledPlugins` by `isMarkedForLoading`, so if the flag isn't cleared, the old plugin stays in the enabled list.
+
+**Fix**:
+1. Use `DynamicPlugins.unloadPlugins(listOf(descriptor), options = options)` instead of `unloadPlugin()`
+2. Return early if unload returns `false` - do not proceed to loading
+
+### Unload Failed - Plugin Still Loaded
+
+If `DynamicPlugins.unloadPlugins()` returns `false`, the plugin could not be unloaded. Common reasons:
+- Plugin has services that can't be disposed
+- Plugin registered extensions that prevent unloading
+- Memory references still held by other plugins
+
+In this case, **do not attempt to load the new version** - it will cause an assertion error. Return early and inform the user that a restart is required.
+
 ### Streaming not working with curl
 
 Use `curl -N` (no-buffer) to see real-time streaming output:
 ```bash
 curl -N -X POST -H "Authorization: $TOKEN" --data-binary @plugin.zip http://localhost:63342/api/plugin-hot-reload
 ```
+
+## API Stability Warning
+
+This plugin uses IntelliJ Platform internal APIs (`@ApiStatus.Internal`) because there is no public API for dynamic plugin loading. These APIs may change without notice in future IntelliJ versions.
+
+**Do NOT suppress the unstable API usage warnings** - keep them visible as documentation of technical debt. The warnings help track which APIs need attention when upgrading IntelliJ Platform versions.
+
+Relevant YouTrack issue: https://youtrack.jetbrains.com/issue/IJPL-224753
