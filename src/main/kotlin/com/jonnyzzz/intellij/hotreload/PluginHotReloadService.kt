@@ -141,7 +141,6 @@ class PluginHotReloadService {
         if (existingPlugin != null) {
             val descriptor = existingPlugin as? IdeaPluginDescriptorImpl
             if (descriptor !== null) {
-                @Suppress("UnstableApiUsage")
                 unloadBlockedReason = DynamicPlugins.checkCanUnloadWithoutRestart(descriptor)
                 if (unloadBlockedReason != null) {
                     val warnMsg = "Plugin cannot be unloaded without restart: $unloadBlockedReason"
@@ -158,12 +157,10 @@ class PluginHotReloadService {
             if (descriptor !== null) {
                 progress.report(HotReloadBundle.message("progress.unloading", existingPlugin.name))
 
-                @Suppress("UnstableApiUsage")
                 val options = DynamicPlugins.UnloadPluginOptions(requireMemorySnapshot = unloadBlockedReason != null)
 
                 // Use unloadPlugins (plural) instead of unloadPlugin (singular) because
                 // the plural version properly sets isMarkedForLoading=false on the descriptor
-                @Suppress("UnstableApiUsage")
                 val unloaded = DynamicPlugins.unloadPlugins(listOf(descriptor), options = options)
 
                 if (!unloaded) {
@@ -215,7 +212,6 @@ class PluginHotReloadService {
 
         // Step 8: Load descriptor from the zip file
         progress.report(HotReloadBundle.message("progress.loading.descriptor"))
-        @Suppress("UnstableApiUsage")
         val newDescriptor = try {
             loadDescriptorFromArtifact(zipFile, null)
         } catch (e: Exception) {
@@ -237,7 +233,6 @@ class PluginHotReloadService {
         progress.report(HotReloadBundle.message("progress.installing", pluginName, pluginVersion ?: "unknown"))
 
         // Step 9: Install and load the plugin dynamically
-        @Suppress("UnstableApiUsage")
         val loaded = try {
             PluginInstaller.installAndLoadDynamicPlugin(zipFile, null, newDescriptor as IdeaPluginDescriptorImpl)
         } catch (e: Exception) {
