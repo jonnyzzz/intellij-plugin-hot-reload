@@ -53,7 +53,7 @@ https://youtrack.jetbrains.com/issue/IJPL-225253/IdeScriptEngineManagerImpl.AllP
 
 ### For Plugin Developers (Recommended)
 
-If you're developing an IntelliJ plugin using the IntelliJ Platform Gradle Plugin, add this task to your `build.gradle.kts`:
+If you're developing an another IntelliJ plugin using the IntelliJ Platform Gradle Plugin, add this task to your `build.gradle.kts`:
 
 ```kotlin
 import java.net.HttpURLConnection
@@ -106,16 +106,6 @@ This will:
 2. Find all running IDEs with the hot-reload plugin installed
 3. Deploy your plugin to each IDE with streaming progress output
 
-### Manual Usage with curl
-
-#### Get Documentation
-
-```bash
-curl http://localhost:63342/api/plugin-hot-reload
-```
-
-Returns this README as `text/markdown`.
-
 #### Hot Reload a Plugin
 
 First, get the token from the marker file:
@@ -127,10 +117,13 @@ ls ~/.*hot-reload
 # Read the token (second line)
 TOKEN=$(sed -n '2p' ~/.<pid>.hot-reload)
 
+# Read the URL abs IntelliJ port number may chnage
+URL=$(sed -n '1p' ~/.<pid>.hot-reload)
+
 # Deploy the plugin with streaming output
 # -N disables buffering for real-time streaming
-curl -N -X POST -H "Authorization: $TOKEN" --data-binary @my-plugin.zip \
-  http://localhost:63342/api/plugin-hot-reload
+curl -N -X POST -H "Authorization: $TOKEN" --data-binary @my-plugin.zip $URL
+  
 ```
 
 **Important**: Use `curl -N` (or `--no-buffer`) to see streaming output in real-time. Without it, curl buffers the response and only shows output when complete.
