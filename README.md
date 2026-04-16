@@ -6,7 +6,8 @@ An IntelliJ IDEA plugin that provides an HTTP REST endpoint for dynamically relo
 
 - **HTTP REST Endpoint** (`/api/plugin-hot-reload`):
   - `GET`: Returns this README documentation
-  - `POST`: Accepts a plugin .zip file and performs hot reload with streaming progress output
+  - `POST ?local-disk-file=<path>`: Reads the plugin .zip from a local file path (no size limit, recommended)
+  - `POST` (body): Accepts a plugin .zip in the request body (limited to 180 MB by IntelliJ's built-in server)
 
 - **Streaming Progress**: POST responses stream progress updates in real-time using chunked transfer encoding
 
@@ -58,6 +59,7 @@ If you're developing an another IntelliJ plugin using the IntelliJ Platform Grad
 ```kotlin
 import java.net.HttpURLConnection
 import java.net.URI
+import java.net.URLEncoder
 
 val deployPlugin by tasks.registering {
     group = "intellij platform"
@@ -77,14 +79,14 @@ val deployPlugin by tasks.registering {
         if (endpoints.isEmpty()) { println("No running IDEs found"); return@doLast }
 
         endpoints.forEach { (url, token) ->
-            println("\n→ $url")
-            val conn = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"; doOutput = true
+            // Use ?local-disk-file= to bypass IntelliJ's 180 MB body size limit
+            val fileUrl = "$url?local-disk-file=${URLEncoder.encode(zip.absolutePath, Charsets.UTF_8)}"
+            println("\n→ $fileUrl")
+            val conn = (URI(fileUrl).toURL().openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"; doOutput = false
                 setRequestProperty("Authorization", token)
-                setRequestProperty("Content-Type", "application/octet-stream")
                 connectTimeout = 5000; readTimeout = 300000
             }
-            conn.outputStream.use { out -> zip.inputStream().use { it.copyTo(out) } }
             if (conn.responseCode in 200..299) {
                 conn.inputStream.bufferedReader().forEachLine { println("  $it") }
             } else {
@@ -117,16 +119,20 @@ ls ~/.*hot-reload
 # Read the token (second line)
 TOKEN=$(sed -n '2p' ~/.<pid>.hot-reload)
 
-# Read the URL abs IntelliJ port number may chnage
+# Read the URL (IntelliJ port number may change)
 URL=$(sed -n '1p' ~/.<pid>.hot-reload)
 
-# Deploy the plugin with streaming output
+# Option 1: Pass a local file path (recommended, no size limit)
+curl -N -X POST -H "Authorization: $TOKEN" "$URL?local-disk-file=/absolute/path/to/my-plugin.zip"
+
+# Option 2: Upload the zip as POST body (plugins under 180 MB only)
 # -N disables buffering for real-time streaming
-curl -N -X POST -H "Authorization: $TOKEN" --data-binary @my-plugin.zip $URL
-  
+curl -N -X POST -H "Authorization: $TOKEN" --data-binary @my-plugin.zip "$URL"
 ```
 
 **Important**: Use `curl -N` (or `--no-buffer`) to see streaming output in real-time. Without it, curl buffers the response and only shows output when complete.
+
+**Body size limit**: IntelliJ's built-in HTTP server limits POST bodies to 180 MB (`ide.netty.max.frame.size.in.mb`). For larger plugins, use `?local-disk-file=<path>` — the server reads the file directly from the local filesystem, bypassing the limit entirely. The path must be absolute.
 
 Example streaming output:
 ```
@@ -211,6 +217,7 @@ Progress is streamed to the HTTP response in real-time using chunked transfer en
 - **Cannot reload itself**: The hot-reload plugin cannot reload itself. To update the hot-reload plugin, restart the IDE.
 - **Not all plugins support dynamic reload**: Some plugins have extensions or services that prevent unloading. The plugin will report this and may require an IDE restart.
 - **Memory leaks possible**: If a plugin doesn't properly clean up resources, memory leaks may occur after reload.
+- **POST body size limit (180 MB)**: IntelliJ's built-in Netty server limits request bodies via `ide.netty.max.frame.size.in.mb` (default `180`). Plugins larger than 180 MB must use the `?local-disk-file=<path>` query parameter instead of uploading the body.
 
 ## Building
 

@@ -1,5 +1,6 @@
 import java.net.HttpURLConnection
 import java.net.URI
+import java.net.URLEncoder
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -92,13 +93,13 @@ val deployPlugin by tasks.registering {
         if (endpoints.isEmpty()) { println("No running IDEs found"); return@doLast }
 
         endpoints.forEach { (url, token) ->
-            println("\n→ $url")
-            val conn = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
+            // Use ?local-disk-file= to bypass IntelliJ's 180 MB body size limit
+            val encodedPath = URLEncoder.encode(zip.absolutePath, Charsets.UTF_8)
+            val fileUrl = "$url?local-disk-file=$encodedPath"
+            println("\n→ $fileUrl")
+            val conn = (URI(fileUrl).toURL().openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"; doOutput = false; doInput = true
                 setRequestProperty("Authorization", token)
-                // File-based transfer: pass path via header instead of uploading body.
-                // Avoids IntelliJ's built-in server 180 MB body size limit (ide.netty.max.frame.size.in.mb).
-                setRequestProperty("X-Plugin-Path", zip.absolutePath)
                 connectTimeout = 5000; readTimeout = 300000
             }
             if (conn.responseCode in 200..299) {

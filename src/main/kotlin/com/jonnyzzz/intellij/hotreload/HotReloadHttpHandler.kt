@@ -40,7 +40,7 @@ class HotReloadHttpHandler : HttpRequestHandler() {
         context: ChannelHandlerContext
     ): Boolean = when (request.method()) {
         HttpMethod.GET -> handleGet(request, context)
-        HttpMethod.POST -> handlePost(request, context)
+        HttpMethod.POST -> handlePost(urlDecoder, request, context)
         else -> false
     }
 
@@ -57,7 +57,7 @@ class HotReloadHttpHandler : HttpRequestHandler() {
         return true
     }
 
-    private fun handlePost(request: FullHttpRequest, context: ChannelHandlerContext): Boolean {
+    private fun handlePost(urlDecoder: QueryStringDecoder, request: FullHttpRequest, context: ChannelHandlerContext): Boolean {
         val markerService = service<HotReloadMarkerService>()
         val authHeader = request.headers().get(HttpHeaderNames.AUTHORIZATION)
 
@@ -65,25 +65,28 @@ class HotReloadHttpHandler : HttpRequestHandler() {
             return sendError(context, request, HttpResponseStatus.UNAUTHORIZED, "Unauthorized")
         }
 
-        // File-based transfer via X-Plugin-Path header — avoids IntelliJ's built-in
-        // server body size limit (ide.netty.max.frame.size.in.mb, default 180 MB).
-        // The client writes the ZIP to disk and passes the path instead of uploading the body.
-        val pluginPath = request.headers().get("X-Plugin-Path")
-        if (pluginPath != null) {
-            val file = Path.of(pluginPath)
+        // File-based transfer via ?local-disk-file=<path> query parameter.
+        // Avoids IntelliJ's built-in server body size limit (ide.netty.max.frame.size.in.mb,
+        // default 180 MB). The client passes the absolute path to a ZIP on the local filesystem;
+        // the server reads it directly, bypassing the Netty body aggregator entirely.
+        val localDiskFile = urlDecoder.parameters()["local-disk-file"]?.firstOrNull()
+        if (localDiskFile != null) {
+            val file = Path.of(localDiskFile)
             if (!Files.exists(file)) {
-                return sendError(context, request, HttpResponseStatus.BAD_REQUEST, "File not found: $pluginPath")
+                return sendError(context, request, HttpResponseStatus.BAD_REQUEST, "File not found: $localDiskFile")
             }
-            log.info("File-based plugin reload from: $pluginPath (${Files.size(file)} bytes)")
+            log.info("File-based plugin reload from: $localDiskFile (${Files.size(file)} bytes)")
             return executeReload(context) { reloadService, progress ->
                 reloadService.reloadPluginFromZipFile(file, progress)
             }
         }
 
-        // Body-based transfer (original behavior, works for plugins under 180 MB)
+        // Body-based transfer (original behavior, works for plugins under 180 MB).
+        // Note: IntelliJ's built-in Netty server limits request bodies to 180 MB
+        // (ide.netty.max.frame.size.in.mb). Larger plugins must use ?local-disk-file=<path>.
         val content = request.content()
         if (!content.isReadable || content.readableBytes() == 0) {
-            return sendError(context, request, HttpResponseStatus.BAD_REQUEST, "No content and no X-Plugin-Path header")
+            return sendError(context, request, HttpResponseStatus.BAD_REQUEST, "No content. Either send the zip as body or use ?local-disk-file=<path>")
         }
 
         val bytes = ByteArray(content.readableBytes())
