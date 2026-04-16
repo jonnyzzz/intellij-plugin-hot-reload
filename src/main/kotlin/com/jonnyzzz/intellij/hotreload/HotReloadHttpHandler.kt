@@ -13,6 +13,8 @@ import org.jetbrains.ide.HttpRequestHandler
 import org.jetbrains.io.addCommonHeaders
 import org.jetbrains.io.send
 import java.io.StringWriter
+import java.nio.file.Files
+import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -63,15 +65,40 @@ class HotReloadHttpHandler : HttpRequestHandler() {
             return sendError(context, request, HttpResponseStatus.UNAUTHORIZED, "Unauthorized")
         }
 
+        // File-based transfer via X-Plugin-Path header — avoids IntelliJ's built-in
+        // server body size limit (ide.netty.max.frame.size.in.mb, default 180 MB).
+        // The client writes the ZIP to disk and passes the path instead of uploading the body.
+        val pluginPath = request.headers().get("X-Plugin-Path")
+        if (pluginPath != null) {
+            val file = Path.of(pluginPath)
+            if (!Files.exists(file)) {
+                return sendError(context, request, HttpResponseStatus.BAD_REQUEST, "File not found: $pluginPath")
+            }
+            log.info("File-based plugin reload from: $pluginPath (${Files.size(file)} bytes)")
+            return executeReload(context) { reloadService, progress ->
+                reloadService.reloadPluginFromZipFile(file, progress)
+            }
+        }
+
+        // Body-based transfer (original behavior, works for plugins under 180 MB)
         val content = request.content()
         if (!content.isReadable || content.readableBytes() == 0) {
-            return sendError(context, request, HttpResponseStatus.BAD_REQUEST, "No content")
+            return sendError(context, request, HttpResponseStatus.BAD_REQUEST, "No content and no X-Plugin-Path header")
         }
 
         val bytes = ByteArray(content.readableBytes())
         content.readBytes(bytes)
         log.info("Received plugin zip: ${bytes.size} bytes")
 
+        return executeReload(context) { reloadService, progress ->
+            reloadService.reloadPlugin(bytes, progress)
+        }
+    }
+
+    private fun executeReload(
+        context: ChannelHandlerContext,
+        reload: (PluginHotReloadService, PluginHotReloadService.ProgressReporter) -> PluginHotReloadService.ReloadResult
+    ): Boolean {
         // Start streaming response
         val channel = context.channel()
         val response = DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK)
@@ -103,7 +130,7 @@ class HotReloadHttpHandler : HttpRequestHandler() {
         ApplicationManager.getApplication().invokeLater({
             try {
                 val reloadService = service<PluginHotReloadService>()
-                val r = reloadService.reloadPlugin(bytes, progressReporter)
+                val r = reload(reloadService, progressReporter)
                 result = r
 
                 val pluginInfo = r.toPluginInfo()

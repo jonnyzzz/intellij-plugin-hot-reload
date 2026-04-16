@@ -94,12 +94,13 @@ val deployPlugin by tasks.registering {
         endpoints.forEach { (url, token) ->
             println("\n→ $url")
             val conn = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"; doOutput = true; doInput = true
+                requestMethod = "POST"; doOutput = false; doInput = true
                 setRequestProperty("Authorization", token)
-                setRequestProperty("Content-Type", "application/octet-stream")
+                // File-based transfer: pass path via header instead of uploading body.
+                // Avoids IntelliJ's built-in server 180 MB body size limit (ide.netty.max.frame.size.in.mb).
+                setRequestProperty("X-Plugin-Path", zip.absolutePath)
                 connectTimeout = 5000; readTimeout = 300000
             }
-            conn.outputStream.use { out -> zip.inputStream().use { it.copyTo(out) } }
             if (conn.responseCode in 200..299) {
                 conn.inputStream.buffered().readAllBytes()
                     .toString(Charsets.UTF_8)

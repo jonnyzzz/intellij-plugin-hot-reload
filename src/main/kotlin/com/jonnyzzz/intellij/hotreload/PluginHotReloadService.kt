@@ -118,6 +118,44 @@ class PluginHotReloadService {
     }
 
     /**
+     * Reload a plugin from a zip file on disk (file-based transfer).
+     * Avoids IntelliJ's built-in server body size limit by reading directly from the filesystem.
+     */
+    fun reloadPluginFromZipFile(zipFile: Path, progress: ProgressReporter = NoOpProgressReporter): ReloadResult {
+        val size = Files.size(zipFile)
+        progress.report(HotReloadBundle.message("progress.starting", size))
+
+        progress.report(HotReloadBundle.message("progress.extracting.id"))
+        val pluginId = try {
+            extractPluginIdFromFile(zipFile)
+        } catch (e: Exception) {
+            val errorMsg = "Failed to extract plugin ID: ${e.message}"
+            log.warn("Failed to extract plugin ID from zip file: $zipFile", e)
+            progress.reportError(errorMsg)
+            return ReloadResult(false, errorMsg)
+        }
+
+        if (pluginId == null) {
+            val errorMsg = HotReloadBundle.message("error.no.plugin.id")
+            progress.reportError(errorMsg)
+            return ReloadResult(false, errorMsg)
+        }
+
+        progress.report(HotReloadBundle.message("progress.plugin.id", pluginId))
+        log.info("Extracted plugin ID from file: $pluginId")
+
+        val selfPluginId = getSelfPluginId()
+        if (pluginId == selfPluginId) {
+            val errorMsg = HotReloadBundle.message("error.self.reload")
+            log.warn("Attempted to reload the hot-reload plugin itself (ID: $selfPluginId)")
+            progress.reportError(errorMsg)
+            return ReloadResult(false, errorMsg, pluginId)
+        }
+
+        return reloadPluginFromFile(pluginId, zipFile, progress)
+    }
+
+    /**
      * Reload a plugin from a zip file on disk.
      */
     fun reloadPluginFromFile(
@@ -277,12 +315,12 @@ class PluginHotReloadService {
     }
 
     /**
-     * Extract the plugin ID from plugin.xml inside the zip file.
+     * Extract the plugin ID from plugin.xml inside a zip stream.
      * Handles both flat structure (META-INF/plugin.xml) and nested jar structure
      * (plugin-name/lib/plugin-name.jar containing META-INF/plugin.xml).
      */
-    internal fun extractPluginId(zipBytes: ByteArray): String? {
-        ZipInputStream(ByteArrayInputStream(zipBytes)).use { zis ->
+    private fun extractPluginIdFromStream(inputStream: java.io.InputStream): String? {
+        ZipInputStream(inputStream).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
                 val name = entry.name
@@ -303,6 +341,14 @@ class PluginHotReloadService {
             }
         }
         return null
+    }
+
+    internal fun extractPluginId(zipBytes: ByteArray): String? {
+        return extractPluginIdFromStream(ByteArrayInputStream(zipBytes))
+    }
+
+    internal fun extractPluginIdFromFile(zipFile: Path): String? {
+        return extractPluginIdFromStream(Files.newInputStream(zipFile))
     }
 
     /**
