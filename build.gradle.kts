@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "com.jonnyzzz.intellij"
-version = "1.0.0-SNAPSHOT-${LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm"))}"
+version = "1.0.0"
 
 repositories {
     mavenCentral()
