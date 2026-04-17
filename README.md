@@ -54,7 +54,7 @@ https://youtrack.jetbrains.com/issue/IJPL-225253/IdeScriptEngineManagerImpl.AllP
 
 ### For Plugin Developers (Recommended)
 
-If you're developing an another IntelliJ plugin using the IntelliJ Platform Gradle Plugin, add this task to your `build.gradle.kts`:
+If you're developing an IntelliJ plugin using the IntelliJ Platform Gradle Plugin, add this task to your `build.gradle.kts`:
 
 ```kotlin
 import java.net.HttpURLConnection
@@ -76,22 +76,20 @@ val deployPlugin by tasks.registering {
                 lines[0] to lines[1]
             }?.distinctBy { it.first } ?: emptyList()
 
-        if (endpoints.isEmpty()) { println("No running IDEs found"); return@doLast }
+        require(endpoints.isNotEmpty()) { "No running IDEs found" }
 
         endpoints.forEach { (url, token) ->
-            // Use ?local-disk-file= to bypass IntelliJ's 180 MB body size limit
-            val fileUrl = "$url?local-disk-file=${URLEncoder.encode(zip.absolutePath, Charsets.UTF_8)}"
+            val encodedPath = URLEncoder.encode(zip.absolutePath, "UTF-8")
+            val fileUrl = "$url?local-disk-file=$encodedPath"
             println("\n→ $fileUrl")
             val conn = (URI(fileUrl).toURL().openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"; doOutput = false
                 setRequestProperty("Authorization", token)
                 connectTimeout = 5000; readTimeout = 300000
             }
-            if (conn.responseCode in 200..299) {
-                conn.inputStream.bufferedReader().forEachLine { println("  $it") }
-            } else {
-                println("  ✗ HTTP ${conn.responseCode}")
-            }
+            val lines = conn.inputStream.bufferedReader().readLines()
+            lines.forEach { println("  $it") }
+            require(lines.lastOrNull() == "SUCCESS") { "Deploy failed (HTTP ${conn.responseCode}): ${lines.lastOrNull()}" }
         }
     }
 }
@@ -103,10 +101,7 @@ Then run:
 ./gradlew deployPlugin
 ```
 
-This will:
-1. Build your plugin
-2. Find all running IDEs with the hot-reload plugin installed
-3. Deploy your plugin to each IDE with streaming progress output
+The task discovers running IDEs via `~/.<pid>.hot-reload` marker files, sends the built plugin ZIP path via the `?local-disk-file=` query parameter, and fails the build if the reload doesn't end with `SUCCESS`.
 
 #### Hot Reload a Plugin
 
